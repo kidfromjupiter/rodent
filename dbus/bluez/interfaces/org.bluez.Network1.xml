@@ -1,0 +1,12 @@
+<node>
+  <interface name="org.bluez.Network1">
+    <method name="Connect">
+      <arg name="uuid" type="s" direction="in" />
+      <arg name="interface" type="s" direction="out" />
+    </method>
+    <method name="Disconnect" />
+    <property name="Connected" type="b" access="read" />
+    <property name="Interface" type="s" access="read" />
+    <property name="UUID" type="s" access="read" />
+  </interface>
+</node>

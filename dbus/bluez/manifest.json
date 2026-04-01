@@ -1,0 +1,202 @@
+{
+  "interfaces": {
+    "org.bluez.Adapter1": {
+      "adaptor_header": "generated/bluez/adaptors/org_bluez_Adapter1_adaptor.h",
+      "object_paths": [
+        "/org/bluez/hci0"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_bluez_Adapter1_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.bluez.Adapter1.xml"
+    },
+    "org.bluez.AdvertisementMonitorManager1": {
+      "adaptor_header": "generated/bluez/adaptors/org_bluez_AdvertisementMonitorManager1_adaptor.h",
+      "object_paths": [
+        "/org/bluez/hci0"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_bluez_AdvertisementMonitorManager1_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.bluez.AdvertisementMonitorManager1.xml"
+    },
+    "org.bluez.AgentManager1": {
+      "adaptor_header": "generated/bluez/adaptors/org_bluez_AgentManager1_adaptor.h",
+      "object_paths": [
+        "/org/bluez"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_bluez_AgentManager1_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.bluez.AgentManager1.xml"
+    },
+    "org.bluez.BatteryProviderManager1": {
+      "adaptor_header": "generated/bluez/adaptors/org_bluez_BatteryProviderManager1_adaptor.h",
+      "object_paths": [
+        "/org/bluez/hci0"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_bluez_BatteryProviderManager1_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.bluez.BatteryProviderManager1.xml"
+    },
+    "org.bluez.Bearer.BREDR1": {
+      "adaptor_header": "generated/bluez/adaptors/org_bluez_Bearer_BREDR1_adaptor.h",
+      "object_paths": [
+        "/org/bluez/hci0/dev_A4_A4_90_78_F5_39"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_bluez_Bearer_BREDR1_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.bluez.Bearer.BREDR1.xml"
+    },
+    "org.bluez.Bearer.LE1": {
+      "adaptor_header": "generated/bluez/adaptors/org_bluez_Bearer_LE1_adaptor.h",
+      "object_paths": [
+        "/org/bluez/hci0/dev_A4_A4_90_78_F5_39",
+        "/org/bluez/hci0/dev_EC_E5_6D_E7_9D_E9"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_bluez_Bearer_LE1_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.bluez.Bearer.LE1.xml"
+    },
+    "org.bluez.Device1": {
+      "adaptor_header": "generated/bluez/adaptors/org_bluez_Device1_adaptor.h",
+      "object_paths": [
+        "/org/bluez/hci0/dev_A4_A4_90_78_F5_39",
+        "/org/bluez/hci0/dev_EC_E5_6D_E7_9D_E9"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_bluez_Device1_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.bluez.Device1.xml"
+    },
+    "org.bluez.GattManager1": {
+      "adaptor_header": "generated/bluez/adaptors/org_bluez_GattManager1_adaptor.h",
+      "object_paths": [
+        "/org/bluez/hci0"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_bluez_GattManager1_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.bluez.GattManager1.xml"
+    },
+    "org.bluez.LEAdvertisingManager1": {
+      "adaptor_header": "generated/bluez/adaptors/org_bluez_LEAdvertisingManager1_adaptor.h",
+      "object_paths": [
+        "/org/bluez/hci0"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_bluez_LEAdvertisingManager1_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.bluez.LEAdvertisingManager1.xml"
+    },
+    "org.bluez.Media1": {
+      "adaptor_header": "generated/bluez/adaptors/org_bluez_Media1_adaptor.h",
+      "object_paths": [
+        "/org/bluez/hci0"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_bluez_Media1_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.bluez.Media1.xml"
+    },
+    "org.bluez.MediaControl1": {
+      "adaptor_header": "generated/bluez/adaptors/org_bluez_MediaControl1_adaptor.h",
+      "object_paths": [
+        "/org/bluez/hci0/dev_A4_A4_90_78_F5_39"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_bluez_MediaControl1_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.bluez.MediaControl1.xml"
+    },
+    "org.bluez.Network1": {
+      "adaptor_header": "generated/bluez/adaptors/org_bluez_Network1_adaptor.h",
+      "object_paths": [
+        "/org/bluez/hci0/dev_A4_A4_90_78_F5_39"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_bluez_Network1_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.bluez.Network1.xml"
+    },
+    "org.bluez.NetworkServer1": {
+      "adaptor_header": "generated/bluez/adaptors/org_bluez_NetworkServer1_adaptor.h",
+      "object_paths": [
+        "/org/bluez/hci0"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_bluez_NetworkServer1_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.bluez.NetworkServer1.xml"
+    },
+    "org.bluez.ProfileManager1": {
+      "adaptor_header": "generated/bluez/adaptors/org_bluez_ProfileManager1_adaptor.h",
+      "object_paths": [
+        "/org/bluez"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_bluez_ProfileManager1_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.bluez.ProfileManager1.xml"
+    },
+    "org.freedesktop.DBus.Introspectable": {
+      "adaptor_header": "generated/bluez/adaptors/org_freedesktop_DBus_Introspectable_adaptor.h",
+      "object_paths": [
+        "/",
+        "/org/bluez",
+        "/org/bluez/hci0",
+        "/org/bluez/hci0/dev_A4_A4_90_78_F5_39",
+        "/org/bluez/hci0/dev_EC_E5_6D_E7_9D_E9"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_freedesktop_DBus_Introspectable_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.freedesktop.DBus.Introspectable.xml"
+    },
+    "org.freedesktop.DBus.ObjectManager": {
+      "adaptor_header": "generated/bluez/adaptors/org_freedesktop_DBus_ObjectManager_adaptor.h",
+      "object_paths": [
+        "/"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_freedesktop_DBus_ObjectManager_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.freedesktop.DBus.ObjectManager.xml"
+    },
+    "org.freedesktop.DBus.Properties": {
+      "adaptor_header": "generated/bluez/adaptors/org_freedesktop_DBus_Properties_adaptor.h",
+      "object_paths": [
+        "/org/bluez/hci0",
+        "/org/bluez/hci0/dev_A4_A4_90_78_F5_39",
+        "/org/bluez/hci0/dev_EC_E5_6D_E7_9D_E9"
+      ],
+      "proxy_header": "generated/bluez/proxies/org_freedesktop_DBus_Properties_proxy.h",
+      "xml": "dbus/bluez/interfaces/org.freedesktop.DBus.Properties.xml"
+    }
+  },
+  "object_paths": {
+    "/": {
+      "interfaces": [
+        "org.freedesktop.DBus.Introspectable",
+        "org.freedesktop.DBus.ObjectManager"
+      ],
+      "raw_xml": "dbus/bluez/raw/root.xml"
+    },
+    "/org/bluez": {
+      "interfaces": [
+        "org.bluez.AgentManager1",
+        "org.bluez.ProfileManager1",
+        "org.freedesktop.DBus.Introspectable"
+      ],
+      "raw_xml": "dbus/bluez/raw/org_bluez.xml"
+    },
+    "/org/bluez/hci0": {
+      "interfaces": [
+        "org.bluez.Adapter1",
+        "org.bluez.AdvertisementMonitorManager1",
+        "org.bluez.BatteryProviderManager1",
+        "org.bluez.GattManager1",
+        "org.bluez.LEAdvertisingManager1",
+        "org.bluez.Media1",
+        "org.bluez.NetworkServer1",
+        "org.freedesktop.DBus.Introspectable",
+        "org.freedesktop.DBus.Properties"
+      ],
+      "raw_xml": "dbus/bluez/raw/org_bluez_hci0.xml"
+    },
+    "/org/bluez/hci0/dev_A4_A4_90_78_F5_39": {
+      "interfaces": [
+        "org.bluez.Bearer.BREDR1",
+        "org.bluez.Bearer.LE1",
+        "org.bluez.Device1",
+        "org.bluez.MediaControl1",
+        "org.bluez.Network1",
+        "org.freedesktop.DBus.Introspectable",
+        "org.freedesktop.DBus.Properties"
+      ],
+      "raw_xml": "dbus/bluez/raw/org_bluez_hci0_dev_A4_A4_90_78_F5_39.xml"
+    },
+    "/org/bluez/hci0/dev_EC_E5_6D_E7_9D_E9": {
+      "interfaces": [
+        "org.bluez.Bearer.LE1",
+        "org.bluez.Device1",
+        "org.freedesktop.DBus.Introspectable",
+        "org.freedesktop.DBus.Properties"
+      ],
+      "raw_xml": "dbus/bluez/raw/org_bluez_hci0_dev_EC_E5_6D_E7_9D_E9.xml"
+    }
+  },
+  "root_path": "/org/bluez",
+  "service": "org.bluez"
+}
