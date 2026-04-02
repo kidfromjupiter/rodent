@@ -12,6 +12,10 @@
 #include <array>
 #include <cerrno>
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <cctype>
+#include <limits>
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -26,9 +30,14 @@ namespace
     constexpr uint8_t kPacketTypeKeyDown = 0x03;
     constexpr uint8_t kPacketTypeKeyUp = 0x04;
     constexpr uint8_t kPacketTypeModifiers = 0x05;
+    constexpr uint8_t kPacketTypeScroll = 0x06;
     constexpr uint8_t kKeyboardUsageMin = 0x04;
     constexpr uint8_t kKeyboardUsageMax = 0xE7;
     constexpr std::size_t kKeyboardNkroBytes = 29;
+    constexpr const char* kEnvDpiMultiplier = "RODENT_DPI_MULTIPLIER";
+    constexpr const char* kEnvSensitivityMultiplier = "RODENT_SENSITIVITY_MULTIPLIER";
+    constexpr const char* kEnvWheelMultiplier = "RODENT_WHEEL_MULTIPLIER";
+    constexpr const char* kEnvInvertScrollDirection = "RODENT_INVERT_SCROLL_DIRECTION";
 
     void handleSignal(int)
     {
@@ -79,15 +88,74 @@ namespace
         return was_set != pressed;
     }
 
+    float readMultiplierFromEnv(const char* env_name, float default_value)
+    {
+        const char* raw = std::getenv(env_name);
+        if (raw == nullptr || raw[0] == '\0') {
+            return default_value;
+        }
+
+        char* end = nullptr;
+        errno = 0;
+        const float parsed = std::strtof(raw, &end);
+        if (errno != 0 || end == raw || (end != nullptr && *end != '\0') || !std::isfinite(parsed) || parsed <= 0.0f) {
+            std::cerr << "Invalid " << env_name << "='" << raw << "', defaulting to " << default_value << '\n';
+            return default_value;
+        }
+
+        return parsed;
+    }
+
+    int scaleDeltaWithMultiplier(int delta, float multiplier)
+    {
+        const double scaled = static_cast<double>(delta) * static_cast<double>(multiplier);
+        if (scaled < static_cast<double>(std::numeric_limits<int>::min())) {
+            return std::numeric_limits<int>::min();
+        }
+        if (scaled > static_cast<double>(std::numeric_limits<int>::max())) {
+            return std::numeric_limits<int>::max();
+        }
+        return static_cast<int>(std::lround(scaled));
+    }
+
+    bool readBoolFromEnv(const char* env_name, bool default_value)
+    {
+        const char* raw = std::getenv(env_name);
+        if (raw == nullptr || raw[0] == '\0') {
+            return default_value;
+        }
+
+        std::string normalized(raw);
+        std::transform(
+            normalized.begin(),
+            normalized.end(),
+            normalized.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        if (normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on") {
+            return true;
+        }
+        if (normalized == "0" || normalized == "false" || normalized == "no" || normalized == "off") {
+            return false;
+        }
+
+        std::cerr << "Invalid " << env_name << "='" << raw << "', defaulting to "
+                  << (default_value ? "true" : "false") << '\n';
+        return default_value;
+    }
+
     class UnixInputReader {
     public:
+        struct KeyboardState {
+            uint8_t modifiers = 0;
+            std::array<uint8_t, kKeyboardNkroBytes> nkro {};
+        };
+
         struct PollResult {
             std::vector<std::array<uint8_t, 4>> mouse_reports;
             bool mouse_buttons_changed = false;
             uint8_t mouse_buttons = 0;
-            bool keyboard_changed = false;
-            uint8_t keyboard_modifiers = 0;
-            std::array<uint8_t, kKeyboardNkroBytes> keyboard_nkro {};
+            std::vector<KeyboardState> keyboard_states;
         };
 
         explicit UnixInputReader(std::string socketPath)
@@ -154,8 +222,6 @@ namespace
         {
             PollResult result {};
             result.mouse_buttons = button_mask_;
-            result.keyboard_modifiers = keyboard_modifiers_;
-            result.keyboard_nkro = keyboard_nkro_;
             if (client_fd_ < 0) {
                 return result;
             }
@@ -168,7 +234,7 @@ namespace
                     while (cursor < static_cast<std::size_t>(n)) {
                         const uint8_t type = chunk[cursor];
                         std::size_t frameSize = 0;
-                        if (type == kPacketTypeMove) {
+                        if (type == kPacketTypeMove || type == kPacketTypeScroll) {
                             frameSize = 5;
                         } else if (type == kPacketTypeButtons) {
                             frameSize = 2;
@@ -198,6 +264,24 @@ namespace
                                     0x00
                                 });
                             }
+                        } else if (type == kPacketTypeScroll) {
+                            const int16_t horizontal16 = readInt16BE(chunk + cursor + 1);
+                            const int16_t vertical16 = readInt16BE(chunk + cursor + 3);
+                            const int8_t horizontal = clampToInt8(horizontal16);
+                            const int8_t vertical = clampToInt8(vertical16);
+
+                            if (horizontal != 0) {
+                                std::cout << "Ignoring horizontal scroll delta=" << static_cast<int>(horizontal)
+                                          << " (descriptor exposes vertical wheel only)\n";
+                            }
+                            if (vertical != 0) {
+                                result.mouse_reports.push_back({
+                                    button_mask_,
+                                    0x00,
+                                    0x00,
+                                    static_cast<uint8_t>(vertical)
+                                });
+                            }
                         } else if (type == kPacketTypeButtons) {
                             button_mask_ = chunk[cursor + 1];
                             result.mouse_buttons = button_mask_;
@@ -212,7 +296,7 @@ namespace
                             const uint8_t new_modifiers = chunk[cursor + 1];
                             if (keyboard_modifiers_ != new_modifiers) {
                                 keyboard_modifiers_ = new_modifiers;
-                                result.keyboard_changed = true;
+                                result.keyboard_states.push_back({keyboard_modifiers_, keyboard_nkro_});
                             }
                         } else {
                             const uint8_t usage = chunk[cursor + 1];
@@ -220,15 +304,15 @@ namespace
                                 std::cout << "Ignored keyboard usage 0x" << std::hex << static_cast<int>(usage) << std::dec << '\n';
                             } else {
                                 const bool changed = setKeyboardUsageBit(keyboard_nkro_, usage, type == kPacketTypeKeyDown);
-                                result.keyboard_changed = result.keyboard_changed || changed;
+                                if (changed) {
+                                    result.keyboard_states.push_back({keyboard_modifiers_, keyboard_nkro_});
+                                }
                             }
                         }
 
                         cursor += frameSize;
                     }
                     result.mouse_buttons = button_mask_;
-                    result.keyboard_modifiers = keyboard_modifiers_;
-                    result.keyboard_nkro = keyboard_nkro_;
                     continue;
                 }
 
@@ -557,6 +641,16 @@ int main()
         std::cout << "Exported GATT application at /rodent. Waiting for Ctrl+C...\n";
         std::cout << "Listening for Unix input on " << kInputSocketPath << '\n';
         UnixInputReader input_reader(kInputSocketPath);
+        const float dpi_multiplier = readMultiplierFromEnv(kEnvDpiMultiplier, 1.0f);
+        const float sensitivity_multiplier = readMultiplierFromEnv(kEnvSensitivityMultiplier, 1.0f);
+        const float wheel_multiplier = readMultiplierFromEnv(kEnvWheelMultiplier, 1.0f);
+        const bool invert_scroll_direction = readBoolFromEnv(kEnvInvertScrollDirection, false);
+        const float delta_multiplier = dpi_multiplier * sensitivity_multiplier;
+        std::cout << "Mouse DPI multiplier=" << dpi_multiplier
+                  << " sensitivity multiplier=" << sensitivity_multiplier
+                  << " effective delta multiplier=" << delta_multiplier
+                  << " wheel multiplier=" << wheel_multiplier
+                  << " invert scroll direction=" << (invert_scroll_direction ? "true" : "false") << '\n';
         uint8_t current_mouse_buttons = 0;
         uint8_t last_sent_buttons = 0;
         bool has_last_sent = false;
@@ -573,34 +667,37 @@ int main()
             if (!poll_result.mouse_reports.empty()) {
                 current_mouse_buttons = poll_result.mouse_reports.back()[0];
             }
-            if (poll_result.keyboard_changed) {
-                current_keyboard_modifiers = poll_result.keyboard_modifiers;
-                current_keyboard_nkro = poll_result.keyboard_nkro;
-                keyboard_dirty = true;
-            }
+            keyboard_dirty = !poll_result.keyboard_states.empty();
 
             int coalesced_dx = 0;
             int coalesced_dy = 0;
+            int coalesced_wheel = 0;
             for (const auto& report : poll_result.mouse_reports) {
                 coalesced_dx += static_cast<int>(static_cast<int8_t>(report[1]));
                 coalesced_dy += static_cast<int>(static_cast<int8_t>(report[2]));
+                coalesced_wheel += static_cast<int>(static_cast<int8_t>(report[3]));
             }
-            const int8_t dx = clampToInt8(coalesced_dx);
-            const int8_t dy = clampToInt8(coalesced_dy);
+            const int scaled_dx = scaleDeltaWithMultiplier(coalesced_dx, delta_multiplier);
+            const int scaled_dy = scaleDeltaWithMultiplier(coalesced_dy, delta_multiplier);
+            const int scaled_wheel = scaleDeltaWithMultiplier(coalesced_wheel, wheel_multiplier);
+            const int8_t dx = clampToInt8(scaled_dx);
+            const int8_t dy = clampToInt8(scaled_dy);
+            const int8_t wheel = clampToInt8(invert_scroll_direction ? -scaled_wheel : scaled_wheel);
 
             if (report_char.NotificationEnabled()) {
                 const bool should_send_mouse =
-                    (!has_last_sent || dx != 0 || dy != 0 || current_mouse_buttons != last_sent_buttons);
+                    (!has_last_sent || dx != 0 || dy != 0 || wheel != 0 || current_mouse_buttons != last_sent_buttons);
                 if (should_send_mouse) {
                     std::cout << "HID mouse dx=" << static_cast<int>(dx)
                               << " dy=" << static_cast<int>(dy)
+                              << " wheel=" << static_cast<int>(wheel)
                               << " buttons=0x" << std::hex << static_cast<int>(current_mouse_buttons) << std::dec
                               << '\n';
                     report_char.SetValueAndNotify({
                         current_mouse_buttons,
                         static_cast<uint8_t>(dx),
                         static_cast<uint8_t>(dy),
-                        0x00
+                        static_cast<uint8_t>(wheel)
                     });
                     last_sent_buttons = current_mouse_buttons;
                     has_last_sent = true;
@@ -608,10 +705,14 @@ int main()
             }
 
             if (keyboard_dirty && keyboard_report_char.NotificationEnabled()) {
-                std::cout << "HID keyboard modifiers=0x" << std::hex
-                          << static_cast<int>(current_keyboard_modifiers) << std::dec << '\n';
-                keyboard_report_char.SetValueAndNotify(
-                    buildKeyboardInputReport(current_keyboard_modifiers, current_keyboard_nkro));
+                for (const auto& state : poll_result.keyboard_states) {
+                    current_keyboard_modifiers = state.modifiers;
+                    current_keyboard_nkro = state.nkro;
+                    std::cout << "HID keyboard modifiers=0x" << std::hex
+                              << static_cast<int>(current_keyboard_modifiers) << std::dec << '\n';
+                    keyboard_report_char.SetValueAndNotify(
+                        buildKeyboardInputReport(current_keyboard_modifiers, current_keyboard_nkro));
+                }
                 keyboard_dirty = false;
             }
 
