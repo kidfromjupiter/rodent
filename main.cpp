@@ -23,6 +23,12 @@ namespace
     constexpr const char* kInputSocketPath = "/tmp/hyprfabric-nearby.sock";
     constexpr uint8_t kPacketTypeMove = 0x01;
     constexpr uint8_t kPacketTypeButtons = 0x02;
+    constexpr uint8_t kPacketTypeKeyDown = 0x03;
+    constexpr uint8_t kPacketTypeKeyUp = 0x04;
+    constexpr uint8_t kPacketTypeModifiers = 0x05;
+    constexpr uint8_t kKeyboardUsageMin = 0x04;
+    constexpr uint8_t kKeyboardUsageMax = 0xE7;
+    constexpr std::size_t kKeyboardNkroBytes = 29;
 
     void handleSignal(int)
     {
@@ -48,8 +54,42 @@ namespace
         return static_cast<int8_t>(value);
     }
 
+    bool isKeyboardUsageInRange(uint8_t usage)
+    {
+        return usage >= kKeyboardUsageMin && usage <= kKeyboardUsageMax;
+    }
+
+    bool setKeyboardUsageBit(std::array<uint8_t, kKeyboardNkroBytes>& bitmap, uint8_t usage, bool pressed)
+    {
+        if (!isKeyboardUsageInRange(usage)) {
+            return false;
+        }
+
+        const std::size_t index = static_cast<std::size_t>(usage - kKeyboardUsageMin);
+        const std::size_t byte_index = index / 8;
+        const uint8_t bit_mask = static_cast<uint8_t>(1u << (index % 8));
+        const bool was_set = (bitmap[byte_index] & bit_mask) != 0;
+
+        if (pressed) {
+            bitmap[byte_index] = static_cast<uint8_t>(bitmap[byte_index] | bit_mask);
+        } else {
+            bitmap[byte_index] = static_cast<uint8_t>(bitmap[byte_index] & ~bit_mask);
+        }
+
+        return was_set != pressed;
+    }
+
     class UnixInputReader {
     public:
+        struct PollResult {
+            std::vector<std::array<uint8_t, 4>> mouse_reports;
+            bool mouse_buttons_changed = false;
+            uint8_t mouse_buttons = 0;
+            bool keyboard_changed = false;
+            uint8_t keyboard_modifiers = 0;
+            std::array<uint8_t, kKeyboardNkroBytes> keyboard_nkro {};
+        };
+
         explicit UnixInputReader(std::string socketPath)
             : socket_path_(std::move(socketPath))
         {
@@ -85,7 +125,7 @@ namespace
             ::unlink(socket_path_.c_str());
         }
 
-        std::vector<std::array<uint8_t, 4>> PollReports()
+        PollResult PollReports()
         {
             acceptClientIfNeeded();
             return readClientReports();
@@ -110,11 +150,14 @@ namespace
             }
         }
 
-        std::vector<std::array<uint8_t, 4>> readClientReports()
+        PollResult readClientReports()
         {
-            std::vector<std::array<uint8_t, 4>> reports;
+            PollResult result {};
+            result.mouse_buttons = button_mask_;
+            result.keyboard_modifiers = keyboard_modifiers_;
+            result.keyboard_nkro = keyboard_nkro_;
             if (client_fd_ < 0) {
-                return reports;
+                return result;
             }
 
             uint8_t chunk[256];
@@ -128,6 +171,8 @@ namespace
                         if (type == kPacketTypeMove) {
                             frameSize = 5;
                         } else if (type == kPacketTypeButtons) {
+                            frameSize = 2;
+                        } else if (type == kPacketTypeKeyDown || type == kPacketTypeKeyUp || type == kPacketTypeModifiers) {
                             frameSize = 2;
                         } else {
                             ++cursor;
@@ -146,25 +191,44 @@ namespace
                             const int8_t dy = clampToInt8(dy16);
 
                             if (dx != 0 || dy != 0) {
-                                reports.push_back({
+                                result.mouse_reports.push_back({
                                     button_mask_,
                                     static_cast<uint8_t>(dx),
                                     static_cast<uint8_t>(dy),
                                     0x00
                                 });
                             }
-                        } else {
+                        } else if (type == kPacketTypeButtons) {
                             button_mask_ = chunk[cursor + 1];
-                            reports.push_back({
+                            result.mouse_buttons = button_mask_;
+                            result.mouse_buttons_changed = true;
+                            result.mouse_reports.push_back({
                                 button_mask_,
                                 0x00,
                                 0x00,
                                 0x00
                             });
+                        } else if (type == kPacketTypeModifiers) {
+                            const uint8_t new_modifiers = chunk[cursor + 1];
+                            if (keyboard_modifiers_ != new_modifiers) {
+                                keyboard_modifiers_ = new_modifiers;
+                                result.keyboard_changed = true;
+                            }
+                        } else {
+                            const uint8_t usage = chunk[cursor + 1];
+                            if (!isKeyboardUsageInRange(usage)) {
+                                std::cout << "Ignored keyboard usage 0x" << std::hex << static_cast<int>(usage) << std::dec << '\n';
+                            } else {
+                                const bool changed = setKeyboardUsageBit(keyboard_nkro_, usage, type == kPacketTypeKeyDown);
+                                result.keyboard_changed = result.keyboard_changed || changed;
+                            }
                         }
 
                         cursor += frameSize;
                     }
+                    result.mouse_buttons = button_mask_;
+                    result.keyboard_modifiers = keyboard_modifiers_;
+                    result.keyboard_nkro = keyboard_nkro_;
                     continue;
                 }
 
@@ -172,17 +236,17 @@ namespace
                     ::close(client_fd_);
                     client_fd_ = -1;
                     std::cout << "Unix input client disconnected\n";
-                    return reports;
+                    return result;
                 }
 
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    return reports;
+                    return result;
                 }
 
                 std::cerr << "recv failed: " << std::strerror(errno) << '\n';
                 ::close(client_fd_);
                 client_fd_ = -1;
-                return reports;
+                return result;
             }
         }
 
@@ -190,6 +254,8 @@ namespace
         int listen_fd_ = -1;
         int client_fd_ = -1;
         uint8_t button_mask_ = 0;
+        uint8_t keyboard_modifiers_ = 0;
+        std::array<uint8_t, kKeyboardNkroBytes> keyboard_nkro_ {};
     };
 }
 
@@ -201,7 +267,7 @@ using rodent::bluez::GattManager;
 using rodent::bluez::GattService;
 using rodent::bluez::LEAdvertisement;
 
-static const std::vector<uint8_t> mouse_hid_report_map {
+static const std::vector<uint8_t> composite_hid_report_map {
     0x05, 0x01,        // Usage Page (Generic Desktop)
     0x09, 0x02,        // Usage (Mouse)
     0xA1, 0x01,        // Collection (Application)
@@ -233,8 +299,48 @@ static const std::vector<uint8_t> mouse_hid_report_map {
     0x81, 0x06,        //     Input (Data,Var,Rel)
 
     0xC0,              //   End Collection
+    0xC0,              // End Collection
+
+    0x05, 0x01,        // Usage Page (Generic Desktop)
+    0x09, 0x06,        // Usage (Keyboard)
+    0xA1, 0x01,        // Collection (Application)
+    0x85, 0x02,        //   Report ID (2)
+    0x05, 0x07,        //   Usage Page (Keyboard/Keypad)
+    0x19, 0xE0,        //   Usage Minimum (Keyboard LeftControl)
+    0x29, 0xE7,        //   Usage Maximum (Keyboard Right GUI)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x25, 0x01,        //   Logical Maximum (1)
+    0x75, 0x01,        //   Report Size (1)
+    0x95, 0x08,        //   Report Count (8)
+    0x81, 0x02,        //   Input (Data,Var,Abs) - modifiers
+    0x75, 0x08,        //   Report Size (8)
+    0x95, 0x01,        //   Report Count (1)
+    0x81, 0x01,        //   Input (Const,Array,Abs) - reserved
+    0x05, 0x07,        //   Usage Page (Keyboard/Keypad)
+    0x19, 0x04,        //   Usage Minimum (Keyboard 'a' and 'A')
+    0x29, 0xE7,        //   Usage Maximum (Keyboard Right GUI)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x25, 0x01,        //   Logical Maximum (1)
+    0x75, 0x01,        //   Report Size (1)
+    0x95, 0xE4,        //   Report Count (228)
+    0x81, 0x02,        //   Input (Data,Var,Abs) - NKRO bitmap
+    0x75, 0x01,        //   Report Size (1)
+    0x95, 0x04,        //   Report Count (4)
+    0x81, 0x01,        //   Input (Const,Array,Abs) - padding
     0xC0               // End Collection
 };
+
+std::vector<uint8_t> buildKeyboardInputReport(
+    uint8_t modifiers,
+    const std::array<uint8_t, kKeyboardNkroBytes>& nkro)
+{
+    std::vector<uint8_t> report;
+    report.reserve(2 + nkro.size());
+    report.push_back(modifiers);
+    report.push_back(0x00);
+    report.insert(report.end(), nkro.begin(), nkro.end());
+    return report;
+}
 
 int main()
 {
@@ -255,7 +361,7 @@ int main()
         // advertisement_config.service_data = {{"00001812-0000-1000-8000-00805f9b34fb",
         //     sdbus::Variant(std::vector<uint8_t>{0x05})}};
         advertisement_config.local_name = "FabricMouse";
-        advertisement_config.appearance = static_cast<uint16_t>(0x03C2);
+        advertisement_config.appearance = static_cast<uint16_t>(0x03C0);
         advertisement_config.min_interval_ms = 30;
         advertisement_config.max_interval_ms = 50;
         auto advertisement = LEAdvertisement(client.connection(), sdbus::ObjectPath("/rodent/advert0"), std::move(advertisement_config));
@@ -324,7 +430,7 @@ int main()
             sdbus::ObjectPath("/rodent/service1/char3"),
             "00002a4b-0000-1000-8000-00805f9b34fb",
             sdbus::ObjectPath("/rodent/service1"),
-            mouse_hid_report_map,
+            composite_hid_report_map,
             {"read"}
 
         );
@@ -350,6 +456,26 @@ int main()
             {"read"}
         );
         report_desc.emitInterfacesAddedSignal({sdbus::InterfaceName("org.bluez.GattDescriptor1")});
+
+        auto keyboard_report_char = GattChar(
+            client.connection(),
+            sdbus::ObjectPath("/rodent/service1/char5"),
+            "00002a4d-0000-1000-8000-00805f9b34fb",
+            sdbus::ObjectPath("/rodent/service1"),
+            buildKeyboardInputReport(0x00, std::array<uint8_t, kKeyboardNkroBytes>{}),
+            {"notify", "read"}
+        );
+        keyboard_report_char.emitInterfacesAddedSignal({sdbus::InterfaceName("org.bluez.GattCharacteristic1")});
+
+        auto keyboard_report_desc = GattDesc(
+            client.connection(),
+            sdbus::ObjectPath("/rodent/service1/char5/desc0"),
+            "00002908-0000-1000-8000-00805f9b34fb",
+            sdbus::ObjectPath("/rodent/service1/char5"),
+            std::vector<uint8_t>{0x02,0x01},
+            {"read"}
+        );
+        keyboard_report_desc.emitInterfacesAddedSignal({sdbus::InterfaceName("org.bluez.GattDescriptor1")});
 
         // add DeviceInfoService
         auto device_info_service =GattService(
@@ -431,45 +557,65 @@ int main()
         std::cout << "Exported GATT application at /rodent. Waiting for Ctrl+C...\n";
         std::cout << "Listening for Unix input on " << kInputSocketPath << '\n';
         UnixInputReader input_reader(kInputSocketPath);
+        uint8_t current_mouse_buttons = 0;
         uint8_t last_sent_buttons = 0;
         bool has_last_sent = false;
+        uint8_t current_keyboard_modifiers = 0;
+        std::array<uint8_t, kKeyboardNkroBytes> current_keyboard_nkro {};
+        bool keyboard_dirty = false;
 
         while (!g_shouldStop) {
-            const auto reports = input_reader.PollReports();
-            if (!report_char.NotificationEnabled()) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                continue;
+            const auto poll_result = input_reader.PollReports();
+
+            if (poll_result.mouse_buttons_changed) {
+                current_mouse_buttons = poll_result.mouse_buttons;
+            }
+            if (!poll_result.mouse_reports.empty()) {
+                current_mouse_buttons = poll_result.mouse_reports.back()[0];
+            }
+            if (poll_result.keyboard_changed) {
+                current_keyboard_modifiers = poll_result.keyboard_modifiers;
+                current_keyboard_nkro = poll_result.keyboard_nkro;
+                keyboard_dirty = true;
             }
 
-            if (!reports.empty()) {
-                int coalesced_dx = 0;
-                int coalesced_dy = 0;
-                uint8_t coalesced_buttons = reports.back()[0];
-                for (const auto& report : reports) {
-                    coalesced_dx += static_cast<int>(static_cast<int8_t>(report[1]));
-                    coalesced_dy += static_cast<int>(static_cast<int8_t>(report[2]));
-                }
-                const int8_t dx = clampToInt8(coalesced_dx);
-                const int8_t dy = clampToInt8(coalesced_dy);
+            int coalesced_dx = 0;
+            int coalesced_dy = 0;
+            for (const auto& report : poll_result.mouse_reports) {
+                coalesced_dx += static_cast<int>(static_cast<int8_t>(report[1]));
+                coalesced_dy += static_cast<int>(static_cast<int8_t>(report[2]));
+            }
+            const int8_t dx = clampToInt8(coalesced_dx);
+            const int8_t dy = clampToInt8(coalesced_dy);
 
-                const bool should_send =
-                    (dx != 0 || dy != 0 || !has_last_sent || coalesced_buttons != last_sent_buttons);
-                if (should_send) {
-                    std::cout << "HID dx=" << static_cast<int>(dx)
-                              << " dy=" << static_cast<int>(dy) << '\n';
+            if (report_char.NotificationEnabled()) {
+                const bool should_send_mouse =
+                    (!has_last_sent || dx != 0 || dy != 0 || current_mouse_buttons != last_sent_buttons);
+                if (should_send_mouse) {
+                    std::cout << "HID mouse dx=" << static_cast<int>(dx)
+                              << " dy=" << static_cast<int>(dy)
+                              << " buttons=0x" << std::hex << static_cast<int>(current_mouse_buttons) << std::dec
+                              << '\n';
                     report_char.SetValueAndNotify({
-                        coalesced_buttons,
+                        current_mouse_buttons,
                         static_cast<uint8_t>(dx),
                         static_cast<uint8_t>(dy),
                         0x00
                     });
-                    last_sent_buttons = coalesced_buttons;
+                    last_sent_buttons = current_mouse_buttons;
                     has_last_sent = true;
                 }
             }
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            if (keyboard_dirty && keyboard_report_char.NotificationEnabled()) {
+                std::cout << "HID keyboard modifiers=0x" << std::hex
+                          << static_cast<int>(current_keyboard_modifiers) << std::dec << '\n';
+                keyboard_report_char.SetValueAndNotify(
+                    buildKeyboardInputReport(current_keyboard_modifiers, current_keyboard_nkro));
+                keyboard_dirty = false;
+            }
 
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 
 
