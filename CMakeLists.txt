@@ -17,6 +17,10 @@ add_executable(
     main.cpp
     src/bluez/BluezClient.cpp
     src/bluez/GattServer.cpp
+    src/bluetooth/MgmtAdvertiser.cpp
+    src/hid/HidReports.cpp
+    src/input/EvdevInputReader.cpp
+    src/runtime/RuntimeConfig.cpp
 )
 
 target_include_directories(

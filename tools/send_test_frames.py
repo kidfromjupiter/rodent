@@ -5,6 +5,9 @@ Send test mouse frames to rodent's Unix socket input.
 Protocol:
   MOVE    -> [type=0x01][dx:int16 big-endian][dy:int16 big-endian]
   BUTTONS -> [type=0x02][mask:uint8]
+  KEY_DOWN -> [type=0x03][hid_usage:uint8]
+  KEY_UP   -> [type=0x04][hid_usage:uint8]
+  MODIFIERS -> [type=0x05][mask:uint8]
 """
 
 from __future__ import annotations
@@ -20,10 +23,16 @@ from dataclasses import dataclass
 
 PACKET_TYPE_MOVE = 0x01
 PACKET_TYPE_BUTTONS = 0x02
+PACKET_TYPE_KEY_DOWN = 0x03
+PACKET_TYPE_KEY_UP = 0x04
+PACKET_TYPE_MODIFIERS = 0x05
 
 LEFT_BUTTON = 0x01
 RIGHT_BUTTON = 0x02
 MIDDLE_BUTTON = 0x04
+
+HID_USAGE_MIN = 0x04
+HID_USAGE_MAX = 0xE7
 
 
 def build_move_frame(dx: int, dy: int) -> bytes:
@@ -36,6 +45,20 @@ def build_button_frame(mask: int) -> bytes:
     if mask < 0 or mask > 0xFF:
         raise ValueError(f"button mask out of uint8 range: {mask}")
     return struct.pack("BB", PACKET_TYPE_BUTTONS, mask)
+
+
+def build_key_frame(packet_type: int, usage: int) -> bytes:
+    if packet_type not in (PACKET_TYPE_KEY_DOWN, PACKET_TYPE_KEY_UP):
+        raise ValueError(f"invalid key packet type: {packet_type}")
+    if usage < HID_USAGE_MIN or usage > HID_USAGE_MAX:
+        raise ValueError(f"usage out of supported range 0x{HID_USAGE_MIN:02X}-0x{HID_USAGE_MAX:02X}: 0x{usage:02X}")
+    return struct.pack("BB", packet_type, usage)
+
+
+def build_modifiers_frame(mask: int) -> bytes:
+    if mask < 0 or mask > 0xFF:
+        raise ValueError(f"modifier mask out of uint8 range: {mask}")
+    return struct.pack("BB", PACKET_TYPE_MODIFIERS, mask)
 
 
 @dataclass
@@ -53,6 +76,16 @@ class ButtonConfig:
     pattern: str
     period_s: float
     hold_s: float
+
+
+@dataclass
+class KeyboardConfig:
+    pattern: str
+    period_s: float
+    hold_s: float
+    start_usage: int
+    usage_count: int
+    modifier_mask: int
 
 
 class MovePatternGenerator:
@@ -137,6 +170,59 @@ class ButtonPatternGenerator:
         raise ValueError(f"Unknown button pattern: {p}")
 
 
+class KeyboardPatternGenerator:
+    def __init__(self, cfg: KeyboardConfig) -> None:
+        self.cfg = cfg
+        self.next_toggle_at = 0.0
+        self.release_at = 0.0
+        self.seq_idx = 0
+        self.held_usage: int | None = None
+        self.modifier_mask = 0
+
+    def _next_usage(self) -> int:
+        span = max(1, self.cfg.usage_count)
+        usage = self.cfg.start_usage + (self.seq_idx % span)
+        self.seq_idx += 1
+        return usage
+
+    def next(self, now_s: float) -> list[bytes]:
+        p = self.cfg.pattern
+        frames: list[bytes] = []
+        if p == "none":
+            return frames
+
+        if p == "hold-a":
+            if self.held_usage is None:
+                self.held_usage = 0x04
+                frames.append(build_key_frame(PACKET_TYPE_KEY_DOWN, self.held_usage))
+            return frames
+
+        if p == "toggle-shift":
+            if now_s >= self.next_toggle_at:
+                self.next_toggle_at = now_s + max(0.001, self.cfg.period_s)
+                if self.modifier_mask == 0:
+                    self.modifier_mask = self.cfg.modifier_mask
+                else:
+                    self.modifier_mask = 0
+                frames.append(build_modifiers_frame(self.modifier_mask))
+            return frames
+
+        if p == "tap-seq":
+            if self.held_usage is not None and now_s >= self.release_at:
+                frames.append(build_key_frame(PACKET_TYPE_KEY_UP, self.held_usage))
+                self.held_usage = None
+                return frames
+            if self.held_usage is None and now_s >= self.next_toggle_at:
+                usage = self._next_usage()
+                frames.append(build_key_frame(PACKET_TYPE_KEY_DOWN, usage))
+                self.held_usage = usage
+                self.release_at = now_s + max(0.001, self.cfg.hold_s)
+                self.next_toggle_at = now_s + max(0.001, self.cfg.period_s)
+            return frames
+
+        raise ValueError(f"Unknown keyboard pattern: {p}")
+
+
 def connect_with_retry(path: str, timeout_s: float) -> socket.socket:
     deadline = time.monotonic() + timeout_s
     last_err: Exception | None = None
@@ -178,6 +264,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--button-period", type=float, default=0.5, help="Seconds between button state changes")
     parser.add_argument("--button-hold", type=float, default=0.05, help="Hold time for click-left")
+    parser.add_argument(
+        "--kb-pattern",
+        choices=["none", "tap-seq", "hold-a", "toggle-shift"],
+        default="none",
+        help="Keyboard test pattern",
+    )
+    parser.add_argument("--kb-period", type=float, default=0.5, help="Seconds between keyboard pattern actions")
+    parser.add_argument("--kb-hold", type=float, default=0.05, help="Key hold time for tap-seq")
+    parser.add_argument("--kb-start-usage", type=int, default=0x04, help="First HID keyboard usage for tap-seq")
+    parser.add_argument("--kb-usage-count", type=int, default=6, help="Number of usages to cycle in tap-seq")
+    parser.add_argument("--kb-mod-mask", type=int, default=0x02, help="Modifier mask for toggle-shift pattern")
 
     parser.add_argument("--quiet", action="store_true", help="Suppress periodic stats output")
     return parser.parse_args()
@@ -201,9 +298,29 @@ def main() -> int:
         period_s=args.button_period,
         hold_s=args.button_hold,
     )
+    kb_cfg = KeyboardConfig(
+        pattern=args.kb_pattern,
+        period_s=args.kb_period,
+        hold_s=args.kb_hold,
+        start_usage=args.kb_start_usage,
+        usage_count=args.kb_usage_count,
+        modifier_mask=args.kb_mod_mask,
+    )
+
+    if kb_cfg.start_usage < HID_USAGE_MIN or kb_cfg.start_usage > HID_USAGE_MAX:
+        raise ValueError(
+            f"--kb-start-usage must be in 0x{HID_USAGE_MIN:02X}-0x{HID_USAGE_MAX:02X}, got 0x{kb_cfg.start_usage:02X}"
+        )
+    if kb_cfg.usage_count <= 0:
+        raise ValueError("--kb-usage-count must be > 0")
+    if kb_cfg.start_usage + kb_cfg.usage_count - 1 > HID_USAGE_MAX:
+        raise ValueError(
+            f"--kb-start-usage + --kb-usage-count exceeds 0x{HID_USAGE_MAX:02X}"
+        )
 
     move_gen = MovePatternGenerator(move_cfg)
     btn_gen = ButtonPatternGenerator(btn_cfg)
+    kb_gen = KeyboardPatternGenerator(kb_cfg)
 
     sock = connect_with_retry(args.socket, args.connect_timeout)
     interval = 1.0 / args.hz
@@ -214,7 +331,7 @@ def main() -> int:
 
     print(
         f"Connected to {args.socket} | hz={args.hz:.2f} | move={args.move_pattern} | "
-        f"buttons={args.button_pattern}"
+        f"buttons={args.button_pattern} | keyboard={args.kb_pattern}"
     )
 
     try:
@@ -231,6 +348,12 @@ def main() -> int:
             maybe_mask = btn_gen.next(now)
             if maybe_mask is not None:
                 sock.sendall(build_button_frame(maybe_mask))
+                sent_frames += 1
+
+            key_frames = kb_gen.next(now)
+            for frame in key_frames:
+                print(frame)
+                sock.sendall(frame)
                 sent_frames += 1
 
             if not args.quiet and now - last_stat >= 1.0:

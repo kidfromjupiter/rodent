@@ -11,8 +11,12 @@
 #include <sdbus-c++/StandardInterfaces.h>
 #include <sdbus-c++/Types.h>
 
-#include "generated/bluez/bluez_all_adaptors.h"
-#include "generated/bluez/bluez_all_proxies.h"
+#include "generated/bluez/adaptors/org_bluez_GattCharacteristic1_adaptor.h"
+#include "generated/bluez/adaptors/org_bluez_GattDescriptor1_adaptor.h"
+#include "generated/bluez/adaptors/org_bluez_GattService1_adaptor.h"
+#include "generated/bluez/adaptors/org_bluez_LEAdvertisement1_adaptor.h"
+#include "generated/bluez/proxies/org_bluez_GattManager1_proxy.h"
+#include "generated/bluez/proxies/org_bluez_LEAdvertisingManager1_proxy.h"
 
 namespace rodent::bluez {
 
