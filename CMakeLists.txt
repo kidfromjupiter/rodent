@@ -16,6 +16,7 @@ add_executable(
     rodent
     main.cpp
     src/bluez/BluezClient.cpp
+    src/bluez/GattServer.cpp
 )
 
 target_include_directories(

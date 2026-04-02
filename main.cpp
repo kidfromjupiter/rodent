@@ -1,510 +1,205 @@
 #include "src/bluez/BluezClient.h"
+#include "src/bluez/GattServer.h"
 
-#include <iomanip>
-#include <iostream>
-#include <map>
-#include <csignal>
 #include <chrono>
-#include <future>
-#include <optional>
-#include <string_view>
-#include <thread>
-#include <utility>
-#include <vector>
-#include <cerrno>
+#include <csignal>
+#include <cstdint>
 #include <cstring>
-#include <sys/socket.h>
-#include <unistd.h>
+#include <iostream>
+#include <string>
+#include <thread>
+#include <vector>
+#include <array>
+#include <cerrno>
+#include <algorithm>
 
-#include "generated/bluez/adaptors/org_freedesktop_DBus_ObjectManager_adaptor.h"
-#include "generated/bluez/bluez_all_adaptors.h"
-#include "generated/bluez/proxies/org_freedesktop_DBus_Introspectable_proxy.h"
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 
 namespace
 {
     volatile std::sig_atomic_t g_shouldStop = 0;
+    constexpr const char* kInputSocketPath = "/tmp/hyprfabric-nearby.sock";
+    constexpr uint8_t kPacketTypeMove = 0x01;
+    constexpr uint8_t kPacketTypeButtons = 0x02;
 
     void handleSignal(int)
     {
         g_shouldStop = 1;
     }
+
+    int16_t readInt16BE(const uint8_t* data)
+    {
+        const uint16_t raw = static_cast<uint16_t>(data[0]) << 8 | static_cast<uint16_t>(data[1]);
+        return static_cast<int16_t>(raw);
+    }
+
+    int8_t clampToInt8(int value)
+    {
+        if (value < -127) {
+            std::cout << "CLAMPED\n";
+            return -127;
+        }
+        if (value > 127) {
+            std::cout << "CLAMPED\n";
+            return 127;
+        }
+        return static_cast<int8_t>(value);
+    }
+
+    class UnixInputReader {
+    public:
+        explicit UnixInputReader(std::string socketPath)
+            : socket_path_(std::move(socketPath))
+        {
+            listen_fd_ = ::socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+            if (listen_fd_ < 0) {
+                throw std::runtime_error("Failed to create Unix socket");
+            }
+
+            ::unlink(socket_path_.c_str());
+
+            sockaddr_un addr {};
+            addr.sun_family = AF_UNIX;
+            std::strncpy(addr.sun_path, socket_path_.c_str(), sizeof(addr.sun_path) - 1);
+
+            if (::bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+                throw std::runtime_error(std::string("Failed to bind Unix socket: ") + std::strerror(errno));
+            }
+            if (::listen(listen_fd_, 1) < 0) {
+                throw std::runtime_error(std::string("Failed to listen on Unix socket: ") + std::strerror(errno));
+            }
+        }
+
+        ~UnixInputReader()
+        {
+            if (client_fd_ >= 0) {
+                ::close(client_fd_);
+                client_fd_ = -1;
+            }
+            if (listen_fd_ >= 0) {
+                ::close(listen_fd_);
+                listen_fd_ = -1;
+            }
+            ::unlink(socket_path_.c_str());
+        }
+
+        std::vector<std::array<uint8_t, 4>> PollReports()
+        {
+            acceptClientIfNeeded();
+            return readClientReports();
+        }
+
+    private:
+        void acceptClientIfNeeded()
+        {
+            if (client_fd_ >= 0) {
+                return;
+            }
+
+            const int fd = ::accept4(listen_fd_, nullptr, nullptr, SOCK_NONBLOCK);
+            if (fd >= 0) {
+                client_fd_ = fd;
+                std::cout << "Unix input client connected\n";
+                return;
+            }
+
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                std::cerr << "accept4 failed: " << std::strerror(errno) << '\n';
+            }
+        }
+
+        std::vector<std::array<uint8_t, 4>> readClientReports()
+        {
+            std::vector<std::array<uint8_t, 4>> reports;
+            if (client_fd_ < 0) {
+                return reports;
+            }
+
+            uint8_t chunk[256];
+            while (true) {
+                const ssize_t n = ::recv(client_fd_, chunk, sizeof(chunk), 0);
+                if (n > 0) {
+                    std::size_t cursor = 0;
+                    while (cursor < static_cast<std::size_t>(n)) {
+                        const uint8_t type = chunk[cursor];
+                        std::size_t frameSize = 0;
+                        if (type == kPacketTypeMove) {
+                            frameSize = 5;
+                        } else if (type == kPacketTypeButtons) {
+                            frameSize = 2;
+                        } else {
+                            ++cursor;
+                            continue;
+                        }
+
+                        if (static_cast<std::size_t>(n) - cursor < frameSize) {
+                            std::cout << "Dropped partial frame\n";
+                            break;
+                        }
+
+                        if (type == kPacketTypeMove) {
+                            const int16_t dx16 = readInt16BE(chunk + cursor + 1);
+                            const int16_t dy16 = readInt16BE(chunk + cursor + 3);
+                            const int8_t dx = clampToInt8(dx16);
+                            const int8_t dy = clampToInt8(dy16);
+
+                            if (dx != 0 || dy != 0) {
+                                reports.push_back({
+                                    button_mask_,
+                                    static_cast<uint8_t>(dx),
+                                    static_cast<uint8_t>(dy),
+                                    0x00
+                                });
+                            }
+                        } else {
+                            button_mask_ = chunk[cursor + 1];
+                            reports.push_back({
+                                button_mask_,
+                                0x00,
+                                0x00,
+                                0x00
+                            });
+                        }
+
+                        cursor += frameSize;
+                    }
+                    continue;
+                }
+
+                if (n == 0) {
+                    ::close(client_fd_);
+                    client_fd_ = -1;
+                    std::cout << "Unix input client disconnected\n";
+                    return reports;
+                }
+
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    return reports;
+                }
+
+                std::cerr << "recv failed: " << std::strerror(errno) << '\n';
+                ::close(client_fd_);
+                client_fd_ = -1;
+                return reports;
+            }
+        }
+
+        std::string socket_path_;
+        int listen_fd_ = -1;
+        int client_fd_ = -1;
+        uint8_t button_mask_ = 0;
+    };
 }
 
-class GattChar final: public sdbus::AdaptorInterfaces<org::bluez::GattCharacteristic1_adaptor,
-    sdbus::ManagedObject_adaptor, sdbus::Properties_adaptor>
-{
-    /// base class for gatt characteristics
-    std::string char_uuid_;
-    sdbus::ObjectPath service_;
-    std::vector<uint8_t> value_;
-    bool write_acquired_;
-    bool notify_acquired_;
-    bool notifying_;
-    std::vector<std::string> flags_;
-    uint16_t handle_;
-    int notify_stream_fd_;
-public:
-    GattChar(
-        sdbus::IConnection& connection,
-        sdbus::ObjectPath object_path,
-        std::string char_uuid,
-        sdbus::ObjectPath service,
-        std::vector<uint8_t> value = {},
-        std::vector<std::string> flags = {})
-        : AdaptorInterfaces(connection, std::move(object_path))
-        , char_uuid_(std::move(char_uuid))
-        , service_(std::move(service))
-        , value_(std::move(value))
-        , flags_(std::move(flags))
-    {
-       registerAdaptor();
-    }
-    ~GattChar()
-    {
-        unregisterAdaptor();
-    }
-
-   void SetValueAndNotify(std::vector<uint8_t> value)
-    {
-        value_ = std::move(value);
-
-        if (notifying_) {
-            emitPropertiesChangedSignal(
-                sdbus::InterfaceName{org::bluez::GattCharacteristic1_adaptor::INTERFACE_NAME},
-                {sdbus::PropertyName{"Value"}}
-            );
-        }
-    }
-    [[nodiscard]] bool NotificationEnabled() const
-    {
-        return notifying_;
-    }
-
-private:
-    void ReadValue(
-        sdbus::Result<std::vector<uint8_t>>&& result,
-        std::map<std::string, sdbus::Variant> /*options*/) override
-    {
-        result.returnResults(value_);
-    }
-
-    void WriteValue(
-        sdbus::Result<>&& result,
-        std::vector<uint8_t> value,
-        std::map<std::string, sdbus::Variant> /*options*/) override
-    {
-        value_ = std::move(value);
-        result.returnResults();
-    }
-
-    void StartNotify() override
-    {
-        notifying_ = true;
-    }
-
-    void StopNotify() override
-    {
-        notifying_ = false;
-        notify_acquired_ = false;
-    }
-
-    void Confirm() override
-    {
-    }
-
-    std::string UUID() override
-    {
-        return char_uuid_;
-    }
-
-    sdbus::ObjectPath Service() override
-    {
-        return service_;
-    }
-
-    std::vector<uint8_t> Value() override
-    {
-        return value_;
-    }
-
-    bool Notifying() override
-    {
-        return notifying_;
-    }
-
-    std::vector<std::string> Flags() override
-    {
-        return flags_;
-    }
-};
-
-class GattDesc final: public sdbus::AdaptorInterfaces<org::bluez::GattDescriptor1_adaptor,
-    sdbus::ManagedObject_adaptor, sdbus::Properties_adaptor>
-{
-    std::string uuid_;
-    sdbus::ObjectPath characteristic_;
-    std::vector<uint8_t> value_;
-    std::vector<std::string> flags_;
-    uint16_t handle_;
-public:
-    GattDesc(
-        sdbus::IConnection& connection,
-        sdbus::ObjectPath object_path,
-        std::string uuid,
-        sdbus::ObjectPath characteristic,
-        std::vector<uint8_t> value = {},
-        std::vector<std::string> flags = {},
-        uint16_t handle = 0)
-        : AdaptorInterfaces(connection, std::move(object_path))
-        , uuid_(std::move(uuid))
-        , characteristic_(std::move(characteristic))
-        , value_(std::move(value))
-        , flags_(std::move(flags))
-        , handle_(handle)
-    {
-        registerAdaptor();
-    }
-
-    ~GattDesc()
-    {
-        unregisterAdaptor();
-    }
-
-private:
-    std::vector<uint8_t> ReadValue(const std::map<std::string, sdbus::Variant>&) override
-    {
-        return value_;
-    }
-
-    void WriteValue(const std::vector<uint8_t>& value, const std::map<std::string, sdbus::Variant>&) override
-    {
-        value_ = value;
-    }
-
-    std::string UUID() override
-    {
-        return uuid_;
-    }
-
-    sdbus::ObjectPath Characteristic() override
-    {
-        return characteristic_;
-    }
-
-    std::vector<uint8_t> Value() override
-    {
-        return value_;
-    }
-
-    std::vector<std::string> Flags() override
-    {
-        return flags_;
-    }
-
-    uint16_t Handle() override
-    {
-        return handle_;
-    }
-
-    void Handle(const uint16_t& value) override
-    {
-        handle_ = value;
-    }
-};
-
-class GattService final: public sdbus::AdaptorInterfaces<org::bluez::GattService1_adaptor,
-    sdbus::ManagedObject_adaptor, sdbus::Properties_adaptor>
-{
-    /// Base class for gatt services
-    std::string uuid_;
-    bool primary_;
-    sdbus::ObjectPath device_;
-    std::vector<sdbus::ObjectPath> includes_;
-    uint16_t handle_;
-public:
-    GattService(
-        sdbus::IConnection& connection,
-        sdbus::ObjectPath object_path,
-        std::string uuid,
-        bool primary = true,
-        sdbus::ObjectPath device = sdbus::ObjectPath("/"),
-        std::vector<sdbus::ObjectPath> includes = {},
-        uint16_t handle = 0)
-        : AdaptorInterfaces(connection, std::move(object_path))
-        , uuid_(std::move(uuid))
-        , primary_(primary)
-        , device_(std::move(device))
-        , includes_(std::move(includes))
-        , handle_(handle)
-    {
-       registerAdaptor();
-    }
-    ~GattService()
-    {
-        unregisterAdaptor();
-    }
-
-private:
-    std::string UUID() override
-    {
-        return uuid_;
-    }
-
-    bool Primary() override
-    {
-        return primary_;
-    }
-
-    sdbus::ObjectPath Device() override
-    {
-        return device_;
-    }
-
-    std::vector<sdbus::ObjectPath> Includes() override
-    {
-        return includes_;
-    }
-
-    uint16_t Handle() override
-    {
-        return handle_;
-    }
-
-    void Handle(const uint16_t& value) override
-    {
-        handle_ = value;
-    }
-};
-
-class Application final: public sdbus::AdaptorInterfaces<sdbus::ObjectManager_adaptor>
-{
-public:
-    Application(sdbus::IConnection& connection, sdbus::ObjectPath object_path)
-        : AdaptorInterfaces(connection, std::move(object_path))
-    {
-       registerAdaptor();
-    }
-    ~Application()
-    {
-        unregisterAdaptor();
-    }
-
-};
-class GattManager final: public sdbus::ProxyInterfaces<org::bluez::GattManager1_proxy>
-{
-public:
-    GattManager(sdbus::IConnection& connection, sdbus::ObjectPath object_path)
-        : ProxyInterfaces(connection, sdbus::ServiceName("org.bluez"), std::move(object_path))
-    {
-       registerProxy();
-    }
-    ~GattManager()
-    {
-        unregisterProxy();
-    }
-
-};
-
-class AdvertisingManager final: public sdbus::ProxyInterfaces<org::bluez::LEAdvertisingManager1_proxy>
-{
-    std::promise<std::optional<sdbus::Error>> register_adv_promise_;
-    std::future<std::optional<sdbus::Error>> register_adv_future_;
-
-public:
-    AdvertisingManager(sdbus::IConnection& connection, sdbus::ObjectPath object_path)
-        : ProxyInterfaces(connection, sdbus::ServiceName("org.bluez"), std::move(object_path))
-    {
-        registerProxy();
-    }
-    ~AdvertisingManager()
-    {
-        unregisterProxy();
-    }
-
-    sdbus::PendingAsyncCall RegisterAdvertisementAsync(
-        const sdbus::ObjectPath& advertisement,
-        const std::map<std::string, sdbus::Variant>& options)
-    {
-        register_adv_promise_ = std::promise<std::optional<sdbus::Error>>{};
-        register_adv_future_ = register_adv_promise_.get_future();
-        return RegisterAdvertisement(advertisement, options);
-    }
-
-    std::optional<sdbus::Error> WaitForRegisterAdvertisement()
-    {
-        return register_adv_future_.get();
-    }
-
-private:
-    void onRegisterAdvertisementReply(std::optional<sdbus::Error> error) override
-    {
-        register_adv_promise_.set_value(std::move(error));
-    }
-};
-
-class LEAdvertisement final: public sdbus::AdaptorInterfaces<org::bluez::LEAdvertisement1_adaptor>
-{
-public:
-    struct Config {
-        std::string type = "peripheral";
-        std::vector<std::string> service_uuids{};
-        std::map<uint16_t, sdbus::Variant> manufacturer_data{};
-        std::vector<std::string> solicit_uuids{};
-        std::map<std::string, sdbus::Variant> service_data{};
-        std::map<uint8_t, sdbus::Variant> data{};
-        std::vector<std::string> scan_response_service_uuids{};
-        std::map<uint16_t, sdbus::Variant> scan_response_manufacturer_data{};
-        std::vector<std::string> scan_response_solicit_uuids{};
-        std::map<std::string, sdbus::Variant> scan_response_service_data{};
-        std::map<uint8_t, sdbus::Variant> scan_response_data{};
-        bool discoverable = true;
-        uint16_t discoverable_timeout = 0;
-        std::vector<std::string> includes{};
-        std::string local_name{};
-        uint16_t appearance = 0;
-        uint16_t duration = 0;
-        uint16_t timeout = 0;
-        std::string secondary_channel = "1M";
-        uint32_t min_interval_ms = 30;
-        uint32_t max_interval_ms = 50;
-        int16_t tx_power = 0;
-    };
-
-private:
-    Config config_;
-
-public:
-    LEAdvertisement(
-        sdbus::IConnection& connection,
-        sdbus::ObjectPath object_path,
-        Config config)
-        : AdaptorInterfaces(connection, std::move(object_path))
-        , config_(std::move(config))
-    {
-        registerAdaptor();
-    }
-
-    ~LEAdvertisement()
-    {
-        unregisterAdaptor();
-    }
-
-private:
-    void Release() override
-    {
-    }
-
-    std::string Type() override
-    {
-        return config_.type;
-    }
-
-    std::vector<std::string> ServiceUUIDs() override
-    {
-        return config_.service_uuids;
-    }
-
-    std::map<uint16_t, sdbus::Variant> ManufacturerData() override
-    {
-        return config_.manufacturer_data;
-    }
-
-    std::vector<std::string> SolicitUUIDs() override
-    {
-        return config_.solicit_uuids;
-    }
-
-    std::map<std::string, sdbus::Variant> ServiceData() override
-    {
-        return config_.service_data;
-    }
-
-    std::map<uint8_t, sdbus::Variant> Data() override
-    {
-        return config_.data;
-    }
-
-    std::vector<std::string> ScanResponseServiceUUIDs() override
-    {
-        return config_.scan_response_service_uuids;
-    }
-
-    std::map<uint16_t, sdbus::Variant> ScanResponseManufacturerData() override
-    {
-        return config_.scan_response_manufacturer_data;
-    }
-
-    std::vector<std::string> ScanResponseSolicitUUIDs() override
-    {
-        return config_.scan_response_solicit_uuids;
-    }
-
-    std::map<std::string, sdbus::Variant> ScanResponseServiceData() override
-    {
-        return config_.scan_response_service_data;
-    }
-
-    std::map<uint8_t, sdbus::Variant> ScanResponseData() override
-    {
-        return config_.scan_response_data;
-    }
-
-    bool Discoverable() override
-    {
-        return config_.discoverable;
-    }
-
-    uint16_t DiscoverableTimeout() override
-    {
-        return config_.discoverable_timeout;
-    }
-
-    std::vector<std::string> Includes() override
-    {
-        return config_.includes;
-    }
-
-    std::string LocalName() override
-    {
-        return config_.local_name;
-    }
-
-    uint16_t Appearance() override
-    {
-        return config_.appearance;
-    }
-
-    uint16_t Duration() override
-    {
-        return config_.duration;
-    }
-
-    uint16_t Timeout() override
-    {
-        return config_.timeout;
-    }
-
-    std::string SecondaryChannel() override
-    {
-        return config_.secondary_channel;
-    }
-
-    uint32_t MinInterval() override
-    {
-        return config_.min_interval_ms;
-    }
-
-    uint32_t MaxInterval() override
-    {
-        return config_.max_interval_ms;
-    }
-
-    int16_t TxPower() override
-    {
-        return config_.tx_power;
-    }
-};
-#include <stdint.h>
+using rodent::bluez::AdvertisingManager;
+using rodent::bluez::Application;
+using rodent::bluez::GattChar;
+using rodent::bluez::GattDesc;
+using rodent::bluez::GattManager;
+using rodent::bluez::GattService;
+using rodent::bluez::LEAdvertisement;
 
 static const std::vector<uint8_t> mouse_hid_report_map {
     0x05, 0x01,        // Usage Page (Generic Desktop)
@@ -734,38 +429,47 @@ int main()
             return 1;
         }
         std::cout << "Exported GATT application at /rodent. Waiting for Ctrl+C...\n";
-
-        uint8_t buttons = 0x00;
-        int8_t dx = 5;
-
-        auto next_mouse_update = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        std::cout << "Listening for Unix input on " << kInputSocketPath << '\n';
+        UnixInputReader input_reader(kInputSocketPath);
+        uint8_t last_sent_buttons = 0;
+        bool has_last_sent = false;
 
         while (!g_shouldStop) {
-            const auto now = std::chrono::steady_clock::now();
-
-            if (now >= next_mouse_update) {
-                if (report_char.NotificationEnabled()) {
-                    // Move right
-                    report_char.SetValueAndNotify({
-                        buttons,                         // buttons
-                        static_cast<uint8_t>(dx),       // x
-                        static_cast<uint8_t>(0),        // y
-                        static_cast<uint8_t>(0)         // wheel
-                    });
-
-                    // Optional: send neutral report after movement
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                    report_char.SetValueAndNotify({
-                        0x00, 0x00, 0x00, 0x00
-                    });
-
-                    dx = -dx; // alternate left/right
-                }
-
-                next_mouse_update = now + std::chrono::milliseconds(800);
+            const auto reports = input_reader.PollReports();
+            if (!report_char.NotificationEnabled()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
             }
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            if (!reports.empty()) {
+                int coalesced_dx = 0;
+                int coalesced_dy = 0;
+                uint8_t coalesced_buttons = reports.back()[0];
+                for (const auto& report : reports) {
+                    coalesced_dx += static_cast<int>(static_cast<int8_t>(report[1]));
+                    coalesced_dy += static_cast<int>(static_cast<int8_t>(report[2]));
+                }
+                const int8_t dx = clampToInt8(coalesced_dx);
+                const int8_t dy = clampToInt8(coalesced_dy);
+
+                const bool should_send =
+                    (dx != 0 || dy != 0 || !has_last_sent || coalesced_buttons != last_sent_buttons);
+                if (should_send) {
+                    std::cout << "HID dx=" << static_cast<int>(dx)
+                              << " dy=" << static_cast<int>(dy) << '\n';
+                    report_char.SetValueAndNotify({
+                        coalesced_buttons,
+                        static_cast<uint8_t>(dx),
+                        static_cast<uint8_t>(dy),
+                        0x00
+                    });
+                    last_sent_buttons = coalesced_buttons;
+                    has_last_sent = true;
+                }
+            }
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
         }
 
 
