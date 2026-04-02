@@ -4,6 +4,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -22,9 +23,20 @@
 #include <stdexcept>
 
 #include <fcntl.h>
+#include <bluetooth/bluetooth.h>
+#include <bluetooth/hci.h>
 #include <linux/input.h>
+#include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+
+#ifndef REL_WHEEL_HI_RES
+#define REL_WHEEL_HI_RES 0x0b
+#endif
+
+#ifndef REL_HWHEEL_HI_RES
+#define REL_HWHEEL_HI_RES 0x0c
+#endif
 
 namespace
 {
@@ -41,6 +53,63 @@ namespace
     constexpr const char* kEnvKeyboardEventPath = "RODENT_EVDEV_KEYBOARD_PATH";
     constexpr const char* kEnvMouseEventPath = "RODENT_EVDEV_MOUSE_PATH";
     constexpr const char* kEnvGrabOnStart = "RODENT_GRAB_ON_START";
+    constexpr const char* kEnvBtControllerIndex = "RODENT_BT_CONTROLLER_INDEX";
+    constexpr const char* kEnvLeTargetAddress = "RODENT_LE_TARGET_ADDRESS";
+    constexpr const char* kEnvLeTargetAddrType = "RODENT_LE_TARGET_ADDR_TYPE";
+    constexpr const char* kEnvLeTargetAction = "RODENT_LE_TARGET_ACTION";
+    constexpr uint16_t kDefaultBtControllerIndex = 0;
+    constexpr std::size_t kLegacyAdvDataMaxLen = 31;
+
+    constexpr uint16_t kMgmtOpAddDevice = 0x0033;
+    constexpr uint16_t kMgmtOpAddAdvertising = 0x003E;
+    constexpr uint16_t kMgmtOpRemoveAdvertising = 0x003F;
+    constexpr uint16_t kMgmtEventCommandComplete = 0x0001;
+    constexpr uint16_t kMgmtEventCommandStatus = 0x0002;
+    constexpr uint16_t kMgmtIndexNone = 0xFFFF;
+    constexpr int kWheelHiResUnitsPerDetent = 120;
+
+    constexpr uint8_t kAdTypeComplete16BitServiceUuids = 0x03;
+    constexpr uint8_t kAdTypeShortenedLocalName = 0x08;
+    constexpr uint8_t kAdTypeCompleteLocalName = 0x09;
+    constexpr uint8_t kAdTypeAppearance = 0x19;
+
+    constexpr uint32_t kMgmtAdvFlagConnectable = 1u << 0;
+    constexpr uint32_t kMgmtAdvFlagDiscoverable = 1u << 1;
+
+    struct mgmt_hdr_local {
+        uint16_t opcode;
+        uint16_t index;
+        uint16_t len;
+    } __attribute__((packed));
+
+    struct mgmt_ev_cmd_complete_local {
+        uint16_t opcode;
+        uint8_t status;
+    } __attribute__((packed));
+
+    struct mgmt_ev_cmd_status_local {
+        uint16_t opcode;
+        uint8_t status;
+    } __attribute__((packed));
+
+    struct mgmt_cp_add_advertising_local {
+        uint8_t instance;
+        uint32_t flags;
+        uint16_t duration;
+        uint16_t timeout;
+        uint8_t adv_data_len;
+        uint8_t scan_rsp_len;
+    } __attribute__((packed));
+
+    struct mgmt_cp_add_device_local {
+        bdaddr_t addr;
+        uint8_t addr_type;
+        uint8_t action;
+    } __attribute__((packed));
+
+    struct mgmt_cp_remove_advertising_local {
+        uint8_t instance;
+    } __attribute__((packed));
 
     void handleSignal(int)
     {
@@ -141,6 +210,42 @@ namespace
         return default_value;
     }
 
+    uint16_t readControllerIndexFromEnv(const char* env_name, uint16_t default_value)
+    {
+        const char* raw = std::getenv(env_name);
+        if (raw == nullptr || raw[0] == '\0') {
+            return default_value;
+        }
+
+        char* end = nullptr;
+        errno = 0;
+        const unsigned long parsed = std::strtoul(raw, &end, 10);
+        if (errno != 0 || end == raw || (end != nullptr && *end != '\0') || parsed > std::numeric_limits<uint16_t>::max()) {
+            std::cerr << "Invalid " << env_name << "='" << raw << "', defaulting to " << default_value << '\n';
+            return default_value;
+        }
+
+        return static_cast<uint16_t>(parsed);
+    }
+
+    uint8_t readU8FromEnv(const char* env_name, uint8_t default_value)
+    {
+        const char* raw = std::getenv(env_name);
+        if (raw == nullptr || raw[0] == '\0') {
+            return default_value;
+        }
+
+        char* end = nullptr;
+        errno = 0;
+        const unsigned long parsed = std::strtoul(raw, &end, 0);
+        if (errno != 0 || end == raw || (end != nullptr && *end != '\0') || parsed > std::numeric_limits<uint8_t>::max()) {
+            std::cerr << "Invalid " << env_name << "='" << raw << "', defaulting to " << static_cast<int>(default_value) << '\n';
+            return default_value;
+        }
+
+        return static_cast<uint8_t>(parsed);
+    }
+
     std::string readStringFromEnv(const char* env_name, const char* default_value)
     {
         const char* raw = std::getenv(env_name);
@@ -236,6 +341,346 @@ namespace
         std::sort(paths.begin(), paths.end());
         return paths;
     }
+
+    struct DirectedTargetConfig {
+        bdaddr_t addr {};
+        uint8_t addr_type = 0x01;  // LE Public
+        uint8_t action = 0x01;     // Allow incoming connection
+    };
+
+    std::optional<DirectedTargetConfig> readDirectedTargetConfig()
+    {
+        const char* raw_addr = std::getenv(kEnvLeTargetAddress);
+        if (raw_addr == nullptr || raw_addr[0] == '\0') {
+            return std::nullopt;
+        }
+
+        DirectedTargetConfig cfg;
+        if (::str2ba(raw_addr, &cfg.addr) != 0) {
+            throw std::runtime_error(std::string("Invalid BLE target address in ") + kEnvLeTargetAddress + ": " + raw_addr);
+        }
+        cfg.addr_type = readU8FromEnv(kEnvLeTargetAddrType, cfg.addr_type);
+        cfg.action = readU8FromEnv(kEnvLeTargetAction, cfg.action);
+        return cfg;
+    }
+
+    bool appendAdField(std::vector<uint8_t>& buffer, uint8_t type, const uint8_t* payload, std::size_t payload_len)
+    {
+        if (payload_len > 0xFF - 1) {
+            return false;
+        }
+
+        const std::size_t required = 2 + payload_len;
+        if (buffer.size() + required > kLegacyAdvDataMaxLen) {
+            return false;
+        }
+
+        buffer.push_back(static_cast<uint8_t>(1 + payload_len));
+        buffer.push_back(type);
+        buffer.insert(buffer.end(), payload, payload + payload_len);
+        return true;
+    }
+
+    std::optional<uint16_t> parseUuid16(std::string uuid)
+    {
+        std::transform(
+            uuid.begin(),
+            uuid.end(),
+            uuid.begin(),
+            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        auto parse_hex16 = [](const std::string& hex) -> std::optional<uint16_t> {
+            if (hex.size() != 4) {
+                return std::nullopt;
+            }
+            char* end = nullptr;
+            errno = 0;
+            const unsigned long value = std::strtoul(hex.c_str(), &end, 16);
+            if (errno != 0 || end == hex.c_str() || (end != nullptr && *end != '\0') || value > 0xFFFF) {
+                return std::nullopt;
+            }
+            return static_cast<uint16_t>(value);
+        };
+
+        if (const auto direct = parse_hex16(uuid); direct.has_value()) {
+            return direct;
+        }
+
+        constexpr const char* kBaseSuffix = "-0000-1000-8000-00805f9b34fb";
+        if (uuid.size() == 36 &&
+            uuid.compare(8, std::strlen(kBaseSuffix), kBaseSuffix) == 0 &&
+            uuid.rfind("0000", 0) == 0) {
+            return parse_hex16(uuid.substr(4, 4));
+        }
+
+        return std::nullopt;
+    }
+
+    std::vector<uint8_t> buildLegacyAdvDataFromServices(const std::vector<std::string>& service_uuids)
+    {
+        std::vector<uint8_t> adv_data;
+        std::vector<uint8_t> uuid_payload;
+        uuid_payload.reserve(service_uuids.size() * 2);
+
+        for (const auto& uuid : service_uuids) {
+            const auto parsed = parseUuid16(uuid);
+            if (!parsed.has_value()) {
+                std::cerr << "Skipping non-16-bit service UUID in legacy advertising data: " << uuid << '\n';
+                continue;
+            }
+            uuid_payload.push_back(static_cast<uint8_t>(parsed.value() & 0xFF));
+            uuid_payload.push_back(static_cast<uint8_t>((parsed.value() >> 8) & 0xFF));
+        }
+
+        if (!uuid_payload.empty()) {
+            (void)appendAdField(
+                adv_data,
+                kAdTypeComplete16BitServiceUuids,
+                uuid_payload.data(),
+                uuid_payload.size());
+        }
+        return adv_data;
+    }
+
+    std::vector<uint8_t> buildLegacyScanResponse(const std::string& local_name, uint16_t appearance)
+    {
+        std::vector<uint8_t> scan_rsp;
+
+        const uint8_t appearance_payload[2] = {
+            static_cast<uint8_t>(appearance & 0xFF),
+            static_cast<uint8_t>((appearance >> 8) & 0xFF)};
+        (void)appendAdField(scan_rsp, kAdTypeAppearance, appearance_payload, sizeof(appearance_payload));
+
+        if (!local_name.empty() && scan_rsp.size() < kLegacyAdvDataMaxLen) {
+            const std::size_t room_for_name = kLegacyAdvDataMaxLen - scan_rsp.size();
+            if (room_for_name > 2) {
+                const std::size_t max_name_len = room_for_name - 2;
+                const bool truncated = local_name.size() > max_name_len;
+                const std::size_t used_len = std::min(local_name.size(), max_name_len);
+                const uint8_t name_type = truncated ? kAdTypeShortenedLocalName : kAdTypeCompleteLocalName;
+                (void)appendAdField(
+                    scan_rsp,
+                    name_type,
+                    reinterpret_cast<const uint8_t*>(local_name.data()),
+                    used_len);
+            }
+        }
+
+        return scan_rsp;
+    }
+
+    int openMgmtControlSocket()
+    {
+        const int fd = ::socket(AF_BLUETOOTH, SOCK_RAW | SOCK_CLOEXEC, BTPROTO_HCI);
+        if (fd < 0) {
+            throw std::runtime_error("Failed to create Bluetooth mgmt socket");
+        }
+
+        sockaddr_hci addr {};
+        addr.hci_family = AF_BLUETOOTH;
+        addr.hci_dev = htobs(HCI_DEV_NONE);
+        addr.hci_channel = HCI_CHANNEL_CONTROL;
+        if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+            ::close(fd);
+            throw std::runtime_error("Failed to bind Bluetooth mgmt socket");
+        }
+
+        const timeval timeout {3, 0};
+        (void)::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        return fd;
+    }
+
+    bool sendMgmtCommandWaitStatus(
+        int mgmt_fd,
+        uint16_t controller_index,
+        uint16_t opcode,
+        const uint8_t* payload,
+        std::size_t payload_len,
+        uint8_t& out_status)
+    {
+        mgmt_hdr_local header {
+            htobs(opcode),
+            htobs(controller_index),
+            htobs(static_cast<uint16_t>(payload_len))};
+
+        std::vector<uint8_t> request(sizeof(header) + payload_len);
+        std::memcpy(request.data(), &header, sizeof(header));
+        if (payload_len > 0) {
+            std::memcpy(request.data() + sizeof(header), payload, payload_len);
+        }
+
+        if (::send(mgmt_fd, request.data(), request.size(), 0) < 0) {
+            return false;
+        }
+
+        std::array<uint8_t, 1024> response {};
+        while (true) {
+            const ssize_t received = ::recv(mgmt_fd, response.data(), response.size(), 0);
+            if (received < 0) {
+                return false;
+            }
+            if (static_cast<std::size_t>(received) < sizeof(mgmt_hdr_local)) {
+                continue;
+            }
+
+            const auto* response_header = reinterpret_cast<const mgmt_hdr_local*>(response.data());
+            const uint16_t response_opcode = btohs(response_header->opcode);
+            const uint16_t response_index = btohs(response_header->index);
+            const uint16_t response_len = btohs(response_header->len);
+
+            if (sizeof(mgmt_hdr_local) + response_len > static_cast<std::size_t>(received)) {
+                continue;
+            }
+            if (response_index != controller_index && response_index != kMgmtIndexNone) {
+                continue;
+            }
+
+            const uint8_t* response_payload = response.data() + sizeof(mgmt_hdr_local);
+            if (response_opcode == kMgmtEventCommandComplete) {
+                if (response_len < sizeof(mgmt_ev_cmd_complete_local)) {
+                    continue;
+                }
+                const auto* complete = reinterpret_cast<const mgmt_ev_cmd_complete_local*>(response_payload);
+                if (btohs(complete->opcode) != opcode) {
+                    continue;
+                }
+                out_status = complete->status;
+                return true;
+            }
+            if (response_opcode == kMgmtEventCommandStatus) {
+                if (response_len < sizeof(mgmt_ev_cmd_status_local)) {
+                    continue;
+                }
+                const auto* status = reinterpret_cast<const mgmt_ev_cmd_status_local*>(response_payload);
+                if (btohs(status->opcode) != opcode) {
+                    continue;
+                }
+                out_status = status->status;
+                return true;
+            }
+        }
+    }
+
+    class MgmtAdvertiser {
+    public:
+        explicit MgmtAdvertiser(uint16_t controller_index, uint8_t instance = 1)
+            : controller_index_(controller_index)
+            , instance_(instance)
+        {
+        }
+
+        ~MgmtAdvertiser()
+        {
+            Stop();
+            if (mgmt_fd_ >= 0) {
+                ::close(mgmt_fd_);
+                mgmt_fd_ = -1;
+            }
+        }
+
+        void Start(
+            const std::vector<std::string>& service_uuids,
+            const std::string& local_name,
+            uint16_t appearance,
+            const std::optional<DirectedTargetConfig>& directed_target)
+        {
+            EnsureSocketOpen();
+
+            // Best-effort cleanup from previous runs.
+            (void)RemoveAdvertisement();
+
+            if (directed_target.has_value()) {
+                mgmt_cp_add_device_local add_device_cmd {};
+                add_device_cmd.addr = directed_target->addr;
+                add_device_cmd.addr_type = directed_target->addr_type;
+                add_device_cmd.action = directed_target->action;
+
+                uint8_t add_device_status = 0xFF;
+                if (!sendMgmtCommandWaitStatus(
+                        mgmt_fd_,
+                        controller_index_,
+                        kMgmtOpAddDevice,
+                        reinterpret_cast<const uint8_t*>(&add_device_cmd),
+                        sizeof(add_device_cmd),
+                        add_device_status)) {
+                    throw std::runtime_error("MGMT_OP_ADD_DEVICE failed: no reply from controller");
+                }
+                if (add_device_status != 0x00) {
+                    throw std::runtime_error("MGMT_OP_ADD_DEVICE failed with status " + std::to_string(add_device_status));
+                }
+            }
+
+            const auto adv_data = buildLegacyAdvDataFromServices(service_uuids);
+            const auto scan_rsp = buildLegacyScanResponse(local_name, appearance);
+
+            std::vector<uint8_t> payload(sizeof(mgmt_cp_add_advertising_local) + adv_data.size() + scan_rsp.size());
+            auto* cmd = reinterpret_cast<mgmt_cp_add_advertising_local*>(payload.data());
+            cmd->instance = instance_;
+            cmd->flags = htobl(kMgmtAdvFlagConnectable | kMgmtAdvFlagDiscoverable);
+            cmd->duration = htobs(0);
+            cmd->timeout = htobs(0);
+            cmd->adv_data_len = static_cast<uint8_t>(adv_data.size());
+            cmd->scan_rsp_len = static_cast<uint8_t>(scan_rsp.size());
+            std::memcpy(payload.data() + sizeof(mgmt_cp_add_advertising_local), adv_data.data(), adv_data.size());
+            std::memcpy(
+                payload.data() + sizeof(mgmt_cp_add_advertising_local) + adv_data.size(),
+                scan_rsp.data(),
+                scan_rsp.size());
+
+            uint8_t status = 0xFF;
+            if (!sendMgmtCommandWaitStatus(
+                    mgmt_fd_,
+                    controller_index_,
+                    kMgmtOpAddAdvertising,
+                    payload.data(),
+                    payload.size(),
+                    status)) {
+                throw std::runtime_error("MGMT_OP_ADD_ADVERTISING failed: no reply from controller");
+            }
+            if (status != 0x00) {
+                throw std::runtime_error("MGMT_OP_ADD_ADVERTISING failed with status " + std::to_string(status));
+            }
+            active_ = true;
+        }
+
+        void Stop()
+        {
+            if (!active_ || mgmt_fd_ < 0) {
+                return;
+            }
+            (void)RemoveAdvertisement();
+            active_ = false;
+        }
+
+    private:
+        void EnsureSocketOpen()
+        {
+            if (mgmt_fd_ < 0) {
+                mgmt_fd_ = openMgmtControlSocket();
+            }
+        }
+
+        bool RemoveAdvertisement()
+        {
+            mgmt_cp_remove_advertising_local remove_cmd {instance_};
+            uint8_t status = 0xFF;
+            if (!sendMgmtCommandWaitStatus(
+                    mgmt_fd_,
+                    controller_index_,
+                    kMgmtOpRemoveAdvertising,
+                    reinterpret_cast<const uint8_t*>(&remove_cmd),
+                    sizeof(remove_cmd),
+                    status)) {
+                return false;
+            }
+            return status == 0x00;
+        }
+
+        int mgmt_fd_ = -1;
+        uint16_t controller_index_;
+        uint8_t instance_;
+        bool active_ = false;
+    };
 
     std::optional<uint8_t> linuxKeyCodeToHidUsage(uint16_t code)
     {
@@ -636,7 +1081,14 @@ namespace
                 } else if (ev.code == REL_WHEEL) {
                     mouse_wheel_ += ev.value;
                     mouse_dirty_ = true;
+                } else if (ev.code == REL_WHEEL_HI_RES) {
+                    mouse_wheel_hi_res_accum_ += ev.value;
                 } else if (ev.code == REL_HWHEEL) {
+                    if (!warned_horizontal_scroll_) {
+                        std::cout << "Ignoring horizontal wheel events (descriptor exposes vertical wheel only)\n";
+                        warned_horizontal_scroll_ = true;
+                    }
+                } else if (ev.code == REL_HWHEEL_HI_RES) {
                     if (!warned_horizontal_scroll_) {
                         std::cout << "Ignoring horizontal wheel events (descriptor exposes vertical wheel only)\n";
                         warned_horizontal_scroll_ = true;
@@ -672,12 +1124,21 @@ namespace
                 return;
             }
 
-            if (ev.type == EV_SYN && ev.code == SYN_REPORT && mouse_dirty_) {
-                result.mouse_reports.push_back({button_mask_, mouse_dx_, mouse_dy_, mouse_wheel_});
-                mouse_dx_ = 0;
-                mouse_dy_ = 0;
-                mouse_wheel_ = 0;
-                mouse_dirty_ = false;
+            if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
+                const int hi_res_steps = mouse_wheel_hi_res_accum_ / kWheelHiResUnitsPerDetent;
+                if (hi_res_steps != 0) {
+                    mouse_wheel_ += hi_res_steps;
+                    mouse_wheel_hi_res_accum_ -= hi_res_steps * kWheelHiResUnitsPerDetent;
+                    mouse_dirty_ = true;
+                }
+
+                if (mouse_dirty_) {
+                    result.mouse_reports.push_back({button_mask_, mouse_dx_, mouse_dy_, mouse_wheel_});
+                    mouse_dx_ = 0;
+                    mouse_dy_ = 0;
+                    mouse_wheel_ = 0;
+                    mouse_dirty_ = false;
+                }
             }
         }
 
@@ -760,6 +1221,7 @@ namespace
         int mouse_dx_ = 0;
         int mouse_dy_ = 0;
         int mouse_wheel_ = 0;
+        int mouse_wheel_hi_res_accum_ = 0;
         bool mouse_dirty_ = false;
         bool warned_horizontal_scroll_ = false;
 
@@ -768,13 +1230,11 @@ namespace
         bool combo_latched_ = false;
     };
 }
-using rodent::bluez::AdvertisingManager;
 using rodent::bluez::Application;
 using rodent::bluez::GattChar;
 using rodent::bluez::GattDesc;
 using rodent::bluez::GattManager;
 using rodent::bluez::GattService;
-using rodent::bluez::LEAdvertisement;
 
 static const std::vector<uint8_t> composite_hid_report_map {
     0x05, 0x01,        // Usage Page (Generic Desktop)
@@ -859,21 +1319,18 @@ int main()
 
         rodent::bluez::BluezClient client;
         const auto managedObjects = client.getManagedObjects();
+        (void)managedObjects;
 
         auto application = Application(client.connection(), sdbus::ObjectPath("/rodent"));
         auto manager = GattManager(client.connection(), sdbus::ObjectPath("/org/bluez/hci0"));
-        auto adv_manager = AdvertisingManager(client.connection(), sdbus::ObjectPath("/org/bluez/hci0"));
-
-        LEAdvertisement::Config advertisement_config;
-        advertisement_config.type = "peripheral";
-        advertisement_config.service_uuids = {"00001812-0000-1000-8000-00805f9b34fb"};
-        // advertisement_config.service_data = {{"00001812-0000-1000-8000-00805f9b34fb",
-        //     sdbus::Variant(std::vector<uint8_t>{0x05})}};
-        advertisement_config.local_name = "FabricMouse";
-        advertisement_config.appearance = static_cast<uint16_t>(0x03C0);
-        advertisement_config.min_interval_ms = 30;
-        advertisement_config.max_interval_ms = 50;
-        auto advertisement = LEAdvertisement(client.connection(), sdbus::ObjectPath("/rodent/advert0"), std::move(advertisement_config));
+        const std::vector<std::string> advertisement_service_uuids = {
+            "00001812-0000-1000-8000-00805f9b34fb"};
+        const std::string advertisement_local_name = "FabricMouse";
+        constexpr uint16_t advertisement_appearance = static_cast<uint16_t>(0x03C0);
+        const uint16_t bt_controller_index =
+            readControllerIndexFromEnv(kEnvBtControllerIndex, kDefaultBtControllerIndex);
+        const auto directed_target = readDirectedTargetConfig();
+        MgmtAdvertiser mgmt_advertiser(bt_controller_index);
         // add battery service
         auto batt_service = GattService(
             client.connection(),
@@ -1047,20 +1504,16 @@ int main()
 
         try
         {
-            auto register_adv_pending = adv_manager.RegisterAdvertisementAsync(sdbus::ObjectPath("/rodent/advert0"), {});
-            (void)register_adv_pending;
-            auto register_adv_error = adv_manager.WaitForRegisterAdvertisement();
-            if (register_adv_error.has_value()) {
-                std::cout << "RegisterAdvertisement D-Bus e: "
-                          << register_adv_error->getName() << ": "
-                          << register_adv_error->getMessage() << '\n';
-                return 1;
-            }
-
-            std::cout << "Advertisement register successful\n";
+            mgmt_advertiser.Start(
+                advertisement_service_uuids,
+                advertisement_local_name,
+                advertisement_appearance,
+                directed_target);
+            std::cout << "Advertisement register successful via BlueZ mgmt API (hci"
+                      << bt_controller_index << ")\n";
         } catch (const std::exception& e)
         {
-            std::cout << "RegisterAdvertisement failed: " << e.what() << '\n';
+            std::cout << "RegisterAdvertisement (mgmt) failed: " << e.what() << '\n';
             return 1;
         }
         std::cout << "Exported GATT application at /rodent. Waiting for Ctrl+C...\n";

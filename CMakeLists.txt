@@ -29,6 +29,7 @@ target_link_libraries(
     rodent
     PRIVATE
         PkgConfig::SDBUSCPP
+        bluetooth
 )
 
 add_custom_target(
