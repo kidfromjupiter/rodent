@@ -5,7 +5,6 @@
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -23,10 +22,8 @@
 #include <stdexcept>
 
 #include <fcntl.h>
-#include <bluetooth/hci.h>
 #include <linux/input.h>
 #include <sys/ioctl.h>
-#include <sys/socket.h>
 #include <unistd.h>
 
 namespace
@@ -44,36 +41,6 @@ namespace
     constexpr const char* kEnvKeyboardEventPath = "RODENT_EVDEV_KEYBOARD_PATH";
     constexpr const char* kEnvMouseEventPath = "RODENT_EVDEV_MOUSE_PATH";
     constexpr const char* kEnvGrabOnStart = "RODENT_GRAB_ON_START";
-    constexpr const char* kEnvDirectedAdvPeer = "RODENT_DIRECTED_ADV_PEER";
-    constexpr const char* kEnvMgmtIndex = "RODENT_MGMT_INDEX";
-    constexpr uint16_t kMgmtOpAddDevice = 0x0033;
-    constexpr uint16_t kMgmtEvCmdComplete = 0x0001;
-    constexpr uint16_t kMgmtEvCmdStatus = 0x0002;
-    constexpr uint8_t kMgmtStatusSuccess = 0x00;
-    constexpr uint8_t kMgmtAddrTypeLePublic = 0x01;
-    constexpr uint8_t kMgmtActionAllowConnection = 0x01;
-
-    struct mgmt_hdr {
-        uint16_t opcode;
-        uint16_t index;
-        uint16_t len;
-    } __attribute__((packed));
-
-    struct mgmt_cp_add_device {
-        uint8_t addr[6];
-        uint8_t addr_type;
-        uint8_t action;
-    } __attribute__((packed));
-
-    struct mgmt_ev_cmd_complete {
-        uint16_t opcode;
-        uint8_t status;
-    } __attribute__((packed));
-
-    struct mgmt_ev_cmd_status {
-        uint8_t status;
-        uint16_t opcode;
-    } __attribute__((packed));
 
     void handleSignal(int)
     {
@@ -272,26 +239,43 @@ namespace
 
     std::optional<uint8_t> linuxKeyCodeToHidUsage(uint16_t code)
     {
-        if (code >= KEY_A && code <= KEY_Z) {
-            return static_cast<uint8_t>(0x04 + (code - KEY_A));
-        }
-        if (code >= KEY_1 && code <= KEY_9) {
-            return static_cast<uint8_t>(0x1E + (code - KEY_1));
-        }
-        if (code == KEY_0) {
-            return 0x27;
-        }
-        if (code >= KEY_F1 && code <= KEY_F12) {
-            return static_cast<uint8_t>(0x3A + (code - KEY_F1));
-        }
-        if (code >= KEY_F13 && code <= KEY_F24) {
-            return static_cast<uint8_t>(0x68 + (code - KEY_F13));
-        }
-        if (code >= KEY_KP1 && code <= KEY_KP9) {
-            return static_cast<uint8_t>(0x59 + (code - KEY_KP1));
-        }
-
         switch (code) {
+        case KEY_A: return 0x04;
+        case KEY_B: return 0x05;
+        case KEY_C: return 0x06;
+        case KEY_D: return 0x07;
+        case KEY_E: return 0x08;
+        case KEY_F: return 0x09;
+        case KEY_G: return 0x0A;
+        case KEY_H: return 0x0B;
+        case KEY_I: return 0x0C;
+        case KEY_J: return 0x0D;
+        case KEY_K: return 0x0E;
+        case KEY_L: return 0x0F;
+        case KEY_M: return 0x10;
+        case KEY_N: return 0x11;
+        case KEY_O: return 0x12;
+        case KEY_P: return 0x13;
+        case KEY_Q: return 0x14;
+        case KEY_R: return 0x15;
+        case KEY_S: return 0x16;
+        case KEY_T: return 0x17;
+        case KEY_U: return 0x18;
+        case KEY_V: return 0x19;
+        case KEY_W: return 0x1A;
+        case KEY_X: return 0x1B;
+        case KEY_Y: return 0x1C;
+        case KEY_Z: return 0x1D;
+        case KEY_1: return 0x1E;
+        case KEY_2: return 0x1F;
+        case KEY_3: return 0x20;
+        case KEY_4: return 0x21;
+        case KEY_5: return 0x22;
+        case KEY_6: return 0x23;
+        case KEY_7: return 0x24;
+        case KEY_8: return 0x25;
+        case KEY_9: return 0x26;
+        case KEY_0: return 0x27;
         case KEY_ENTER: return 0x28;
         case KEY_ESC: return 0x29;
         case KEY_BACKSPACE: return 0x2A;
@@ -309,6 +293,18 @@ namespace
         case KEY_DOT: return 0x37;
         case KEY_SLASH: return 0x38;
         case KEY_CAPSLOCK: return 0x39;
+        case KEY_F1: return 0x3A;
+        case KEY_F2: return 0x3B;
+        case KEY_F3: return 0x3C;
+        case KEY_F4: return 0x3D;
+        case KEY_F5: return 0x3E;
+        case KEY_F6: return 0x3F;
+        case KEY_F7: return 0x40;
+        case KEY_F8: return 0x41;
+        case KEY_F9: return 0x42;
+        case KEY_F10: return 0x43;
+        case KEY_F11: return 0x44;
+        case KEY_F12: return 0x45;
         case KEY_SYSRQ: return 0x46;
         case KEY_SCROLLLOCK: return 0x47;
         case KEY_PAUSE: return 0x48;
@@ -328,12 +324,33 @@ namespace
         case KEY_KPMINUS: return 0x56;
         case KEY_KPPLUS: return 0x57;
         case KEY_KPENTER: return 0x58;
+        case KEY_KP1: return 0x59;
+        case KEY_KP2: return 0x5A;
+        case KEY_KP3: return 0x5B;
+        case KEY_KP4: return 0x5C;
+        case KEY_KP5: return 0x5D;
+        case KEY_KP6: return 0x5E;
+        case KEY_KP7: return 0x5F;
+        case KEY_KP8: return 0x60;
+        case KEY_KP9: return 0x61;
         case KEY_KP0: return 0x62;
         case KEY_KPDOT: return 0x63;
         case KEY_102ND: return 0x64;
         case KEY_COMPOSE: return 0x65;
         case KEY_POWER: return 0x66;
         case KEY_KPEQUAL: return 0x67;
+        case KEY_F13: return 0x68;
+        case KEY_F14: return 0x69;
+        case KEY_F15: return 0x6A;
+        case KEY_F16: return 0x6B;
+        case KEY_F17: return 0x6C;
+        case KEY_F18: return 0x6D;
+        case KEY_F19: return 0x6E;
+        case KEY_F20: return 0x6F;
+        case KEY_F21: return 0x70;
+        case KEY_F22: return 0x71;
+        case KEY_F23: return 0x72;
+        case KEY_F24: return 0x73;
         case KEY_MUTE: return 0x7F;
         case KEY_VOLUMEUP: return 0x80;
         case KEY_VOLUMEDOWN: return 0x81;
@@ -695,9 +712,7 @@ namespace
                 }
 
                 if (combo_latched_) {
-                    // Re-arm only after both keys are released to avoid double-toggles
-                    // from transient/synthetic key state changes.
-                    if (!left_ctrl_physical_ && !right_ctrl_physical_) {
+                    if (!both_pressed) {
                         combo_latched_ = false;
                     }
                     bool changed = false;
