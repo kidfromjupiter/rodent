@@ -1,4 +1,0 @@
-/home/lasan/Dev/rodent/build/CMakeFiles/rodent.dir
-/home/lasan/Dev/rodent/build/CMakeFiles/refresh_bluez_codegen.dir
-/home/lasan/Dev/rodent/build/CMakeFiles/edit_cache.dir
-/home/lasan/Dev/rodent/build/CMakeFiles/rebuild_cache.dir

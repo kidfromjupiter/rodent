@@ -1,1 +1,0 @@
-/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/rodent.dir/link.d CMakeFiles/rodent.dir/main.cpp.o CMakeFiles/rodent.dir/src/bluez/BluezClient.cpp.o -o rodent  /usr/lib64/libsdbus-c++.so /usr/lib64/libsystemd.so
