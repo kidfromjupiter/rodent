@@ -589,15 +589,14 @@ void EvdevInputReader::handleKeyboardEvent(const input_event& ev, PollResult& re
     const bool pressed = ev.value != 0;
     const bool repeat = ev.value == 2;
 
-    if (ev.code == KEY_LEFTCTRL || ev.code == KEY_RIGHTCTRL) {
-        const bool is_left = ev.code == KEY_LEFTCTRL;
-        if (is_left) {
+    if (ev.code == KEY_LEFTCTRL || ev.code == KEY_ESC) {
+        if (ev.code == KEY_LEFTCTRL) {
             left_ctrl_physical_ = pressed;
         } else {
-            right_ctrl_physical_ = pressed;
+            escape_physical_ = pressed;
         }
 
-        const bool both_pressed = left_ctrl_physical_ && right_ctrl_physical_;
+        const bool both_pressed = left_ctrl_physical_ && escape_physical_;
         if (both_pressed && !combo_latched_) {
             combo_latched_ = true;
             toggleGrab();

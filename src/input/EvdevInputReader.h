@@ -78,7 +78,7 @@ private:
     bool warned_horizontal_scroll_ = false;
 
     bool left_ctrl_physical_ = false;
-    bool right_ctrl_physical_ = false;
+    bool escape_physical_ = false;
     bool combo_latched_ = false;
 };
 
