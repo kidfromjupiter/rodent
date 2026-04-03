@@ -597,9 +597,9 @@ void EvdevInputReader::handleKeyboardEvent(const input_event& ev, PollResult& re
         }
 
         const bool both_pressed = left_ctrl_physical_ && escape_physical_;
+        const bool both_released = !left_ctrl_physical_ && !escape_physical_;
         if (both_pressed && !combo_latched_) {
             combo_latched_ = true;
-            toggleGrab();
             bool changed = false;
             changed = updateModifierBit(0, false) || changed;
             changed = updateModifierBit(4, false) || changed;
@@ -610,7 +610,8 @@ void EvdevInputReader::handleKeyboardEvent(const input_event& ev, PollResult& re
         }
 
         if (combo_latched_) {
-            if (!both_pressed) {
+            if (both_released) {
+                toggleGrab();
                 combo_latched_ = false;
             }
             bool changed = false;
