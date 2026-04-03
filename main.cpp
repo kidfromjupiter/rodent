@@ -1,6 +1,7 @@
 #include "src/bluez/BluezClient.h"
 #include "src/bluez/GattServer.h"
 #include "src/bluetooth/MgmtAdvertiser.h"
+#include "src/clipboard/ClipboardWatcher.h"
 #include "src/hid/HidReports.h"
 #include "src/input/EvdevInputReader.h"
 #include "src/runtime/RuntimeConfig.h"
@@ -10,6 +11,8 @@
 #include <csignal>
 #include <cstdint>
 #include <iostream>
+#include <optional>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -182,6 +185,21 @@ int main()
             {"read"});
         pnp_id_char.emitInterfacesAddedSignal();
 
+        auto clipboard_service = GattService(
+            client.connection(),
+            sdbus::ObjectPath("/rodent/service3"),
+            "9d1589a0-4f0e-4d3f-9a6b-4ab7d7e21f01");
+        clipboard_service.emitInterfacesAddedSignal({sdbus::InterfaceName("org.bluez.GattService1")});
+
+        auto clipboard_char = GattChar(
+            client.connection(),
+            sdbus::ObjectPath("/rodent/service3/char0"),
+            "9d1589a0-4f0e-4d3f-9a6b-4ab7d7e21f02",
+            sdbus::ObjectPath("/rodent/service3"),
+            std::vector<uint8_t>{},
+            {"read", "notify"});
+        clipboard_char.emitInterfacesAddedSignal({sdbus::InterfaceName("org.bluez.GattCharacteristic1")});
+
         try {
             auto register_future = manager.RegisterApplication(sdbus::ObjectPath("/rodent"), {});
             register_future.get();
@@ -219,12 +237,25 @@ int main()
                 rodent::runtime::kDefaultMouseEventPath));
         const bool grab_on_start =
             rodent::runtime::ReadBoolFromEnv(rodent::runtime::kEnvGrabOnStart, false);
+        const bool clipboard_watch_primary =
+            rodent::runtime::ReadBoolFromEnv(rodent::runtime::kEnvClipboardWatchPrimary, false);
+        const std::string clipboard_watch_seat =
+            rodent::runtime::ReadStringFromEnv(rodent::runtime::kEnvClipboardWatchSeat, "");
 
         std::cout << "Reading evdev input from keyboard='" << keyboard_event_path
                   << "' mouse='" << mouse_event_path
                   << "' grab_on_start=" << (grab_on_start ? "true" : "false") << '\n';
+        std::cout << "Clipboard watch mode=wayland primary="
+                  << (clipboard_watch_primary ? "true" : "false")
+                  << " seat='" << clipboard_watch_seat << "'\n";
 
         rodent::input::EvdevInputReader input_reader(keyboard_event_path, mouse_event_path, grab_on_start);
+        rodent::clipboard::WaylandClipboardWatcher clipboard_watcher({
+            .seat = clipboard_watch_seat.empty() ? std::nullopt : std::optional<std::string>(clipboard_watch_seat),
+            .primary = clipboard_watch_primary,
+        });
+        clipboard_watcher.Start();
+
         const float dpi_multiplier =
             rodent::runtime::ReadMultiplierFromEnv(rodent::runtime::kEnvDpiMultiplier, 1.0f);
         const float sensitivity_multiplier =
@@ -247,6 +278,8 @@ int main()
         uint8_t current_keyboard_modifiers = 0;
         std::array<uint8_t, rodent::hid::kKeyboardNkroBytes> current_keyboard_nkro {};
         bool keyboard_dirty = false;
+        std::vector<uint8_t> last_published_clipboard;
+        std::set<std::string> unknown_clipboard_states_logged;
 
         while (!g_shouldStop) {
             const auto poll_result = input_reader.PollReports();
@@ -305,6 +338,37 @@ int main()
                         rodent::hid::BuildKeyboardInputReport(current_keyboard_modifiers, current_keyboard_nkro));
                 }
                 keyboard_dirty = false;
+            }
+
+            rodent::clipboard::ClipboardEvent clipboard_event;
+            while (clipboard_watcher.PollEvent(clipboard_event)) {
+                std::vector<uint8_t> candidate_value;
+                if (clipboard_event.state == rodent::clipboard::ClipboardState::Data) {
+                    const auto bytes_opt = clipboard_watcher.ReadClipboardBytes();
+                    if (!bytes_opt.has_value()) {
+                        continue;
+                    }
+                    candidate_value = *bytes_opt;
+                } else if (clipboard_event.state == rodent::clipboard::ClipboardState::Nil
+                           || clipboard_event.state == rodent::clipboard::ClipboardState::Clear
+                           || clipboard_event.state == rodent::clipboard::ClipboardState::Sensitive) {
+                    candidate_value = {};
+                } else {
+                    if (unknown_clipboard_states_logged.insert(clipboard_event.raw_state).second) {
+                        std::cerr << "Unknown CLIPBOARD_STATE='" << clipboard_event.raw_state << "'\n";
+                    }
+                    continue;
+                }
+
+                if (candidate_value.size() > clipboard_char.MaxValueLen()) {
+                    continue;
+                }
+                if (candidate_value != last_published_clipboard) {
+                    clipboard_char.SetValueAndNotify(candidate_value);
+
+                    std::cout << "Sent clipboard contents" << std::string(candidate_value.begin(), candidate_value.end()) <<  '\n';
+                    last_published_clipboard = std::move(candidate_value);
+                }
             }
 
             std::this_thread::sleep_for(std::chrono::milliseconds(1));

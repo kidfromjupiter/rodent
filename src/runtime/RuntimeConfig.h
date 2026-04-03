@@ -21,6 +21,8 @@ inline constexpr const char* kEnvBtControllerIndex = "RODENT_BT_CONTROLLER_INDEX
 inline constexpr const char* kEnvLeTargetAddress = "RODENT_LE_TARGET_ADDRESS";
 inline constexpr const char* kEnvLeTargetAddrType = "RODENT_LE_TARGET_ADDR_TYPE";
 inline constexpr const char* kEnvLeTargetAction = "RODENT_LE_TARGET_ACTION";
+inline constexpr const char* kEnvClipboardWatchSeat = "RODENT_CLIPBOARD_WATCH_SEAT";
+inline constexpr const char* kEnvClipboardWatchPrimary = "RODENT_CLIPBOARD_WATCH_PRIMARY";
 inline constexpr uint16_t kDefaultBtControllerIndex = 0;
 
 float ReadMultiplierFromEnv(const char* env_name, float default_value);

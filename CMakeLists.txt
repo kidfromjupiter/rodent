@@ -18,6 +18,7 @@ add_executable(
     src/bluez/BluezClient.cpp
     src/bluez/GattServer.cpp
     src/bluetooth/MgmtAdvertiser.cpp
+    src/clipboard/ClipboardWatcher.cpp
     src/hid/HidReports.cpp
     src/input/EvdevInputReader.cpp
     src/runtime/RuntimeConfig.cpp

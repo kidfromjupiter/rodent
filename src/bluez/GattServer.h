@@ -1,6 +1,7 @@
 #pragma once
 
 #include <future>
+#include <cstddef>
 #include <map>
 #include <optional>
 #include <string>
@@ -36,6 +37,7 @@ public:
 
     void SetValueAndNotify(std::vector<uint8_t> value);
     [[nodiscard]] bool NotificationEnabled() const;
+    [[nodiscard]] size_t MaxValueLen() const;
 
 private:
     void ReadValue(
@@ -63,6 +65,7 @@ private:
     std::vector<std::string> flags_;
     uint16_t handle_ = 0;
     int notify_stream_fd_ = -1;
+    uint16_t mtu_ = 23;
 };
 
 class GattDesc final: public sdbus::AdaptorInterfaces<

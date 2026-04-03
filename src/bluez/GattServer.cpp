@@ -1,5 +1,6 @@
 #include "GattServer.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace rodent::bluez {
@@ -41,18 +42,38 @@ bool GattChar::NotificationEnabled() const
     return notifying_;
 }
 
+size_t GattChar::MaxValueLen() const
+{
+    const size_t capped = std::min<size_t>(mtu_, 515U);
+    return capped >= 3 ? (capped - 3) : 0U;
+}
+
 void GattChar::ReadValue(
     sdbus::Result<std::vector<uint8_t>>&& result,
-    std::map<std::string, sdbus::Variant> /*options*/)
+    std::map<std::string, sdbus::Variant> options)
 {
+    const auto mtu_it = options.find("mtu");
+    if (mtu_it != options.end()) {
+        try {
+            mtu_ = mtu_it->second.get<uint16_t>();
+        } catch (...) {
+        }
+    }
     result.returnResults(value_);
 }
 
 void GattChar::WriteValue(
     sdbus::Result<>&& result,
     std::vector<uint8_t> value,
-    std::map<std::string, sdbus::Variant> /*options*/)
+    std::map<std::string, sdbus::Variant> options)
 {
+    const auto mtu_it = options.find("mtu");
+    if (mtu_it != options.end()) {
+        try {
+            mtu_ = mtu_it->second.get<uint16_t>();
+        } catch (...) {
+        }
+    }
     value_ = std::move(value);
     result.returnResults();
 }
