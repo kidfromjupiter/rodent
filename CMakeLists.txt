@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(PkgConfig REQUIRED)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_program(BUSCTL_EXECUTABLE NAMES busctl REQUIRED)
-find_program(SDBUS_XML2CPP_EXECUTABLE NAMES sdbus-c++-xml2cpp REQUIRED)
+find_program(SDBUS_XML2CPP_EXECUTABLE NAMES sdbus-c++-xml2cpp)
 
 pkg_check_modules(SDBUSCPP REQUIRED IMPORTED_TARGET sdbus-c++)
 
@@ -37,15 +37,19 @@ target_link_libraries(
         bluetooth
 )
 
-add_custom_target(
-    refresh_bluez_codegen
-    COMMAND
-        ${Python3_EXECUTABLE}
-        ${CMAKE_CURRENT_SOURCE_DIR}/tools/refresh_bluez_codegen.py
-        --xml-root ${CMAKE_CURRENT_SOURCE_DIR}/dbus/bluez
-        --generated-root ${CMAKE_CURRENT_SOURCE_DIR}/generated/bluez
-        --xml2cpp ${SDBUS_XML2CPP_EXECUTABLE}
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "Refresh BlueZ introspection XML and sdbus-c++ glue from the live system bus"
-    VERBATIM
-)
+if(SDBUS_XML2CPP_EXECUTABLE)
+  add_custom_target(
+      refresh_bluez_codegen
+      COMMAND
+          ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/tools/refresh_bluez_codegen.py
+          --xml-root ${CMAKE_CURRENT_SOURCE_DIR}/dbus/bluez
+          --generated-root ${CMAKE_CURRENT_SOURCE_DIR}/generated/bluez
+          --xml2cpp ${SDBUS_XML2CPP_EXECUTABLE}
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+      COMMENT "Refresh BlueZ introspection XML and sdbus-c++ glue from the live system bus"
+      VERBATIM
+  )
+else()
+  message(STATUS "sdbus-c++-xml2cpp not found - refresh_bluez_codegen target will not be available")
+endif()
