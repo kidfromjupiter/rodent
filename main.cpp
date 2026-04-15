@@ -253,10 +253,6 @@ int main()
             rodent::runtime::ReadStringFromEnv(
                 rodent::runtime::kEnvMouseEventPath,
                 rodent::runtime::kDefaultMouseEventPath));
-        const std::string touchpad_event_path = rodent::runtime::SanitizeInputPath(
-            rodent::runtime::ReadStringFromEnv(
-                rodent::runtime::kEnvTouchpadEventPath,
-                rodent::runtime::kDefaultTouchpadEventPath));
         const bool grab_on_start =
             rodent::runtime::ReadBoolFromEnv(rodent::runtime::kEnvGrabOnStart, false);
         const bool clipboard_watch_primary =
@@ -268,8 +264,6 @@ int main()
             rodent::runtime::ReadMultiplierFromEnv(rodent::runtime::kEnvDpiMultiplier, 1.0f);
         const float sensitivity_multiplier =
             rodent::runtime::ReadMultiplierFromEnv(rodent::runtime::kEnvSensitivityMultiplier, 1.0f);
-        const float touchpad_sensitivity_multiplier =
-            rodent::runtime::ReadMultiplierFromEnv(rodent::runtime::kEnvTouchpadSensitivityMultiplier, 1.0f);
         const float wheel_multiplier =
             rodent::runtime::ReadMultiplierFromEnv(rodent::runtime::kEnvWheelMultiplier, 1.0f);
         const bool invert_scroll_direction =
@@ -278,7 +272,6 @@ int main()
 
         std::cout << "Reading evdev input from keyboard='" << keyboard_event_path
                   << "' mouse='" << mouse_event_path
-                  << "' touchpad='" << touchpad_event_path
                   << "' grab_on_start=" << (grab_on_start ? "true" : "false") << '\n';
         std::cout << "Clipboard watch mode=wayland primary="
                   << (clipboard_watch_primary ? "true" : "false")
@@ -288,11 +281,8 @@ int main()
                   << " effective delta multiplier=" << delta_multiplier
                   << " wheel multiplier=" << wheel_multiplier
                   << " invert scroll direction=" << (invert_scroll_direction ? "true" : "false") << '\n';
-        if (!touchpad_event_path.empty()) {
-            std::cout << "Touchpad sensitivity multiplier=" << touchpad_sensitivity_multiplier << '\n';
-        }
 
-        rodent::input::EvdevInputReader input_reader(keyboard_event_path, mouse_event_path, touchpad_event_path, grab_on_start, touchpad_sensitivity_multiplier);
+        rodent::input::EvdevInputReader input_reader(keyboard_event_path, mouse_event_path, grab_on_start);
         rodent::clipboard::WaylandClipboardWatcher clipboard_watcher({
             .seat = clipboard_watch_seat.empty() ? std::nullopt : std::optional<std::string>(clipboard_watch_seat),
             .primary = clipboard_watch_primary,

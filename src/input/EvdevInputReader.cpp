@@ -304,33 +304,16 @@ std::optional<uint8_t> linuxKeyCodeToModifierBit(uint16_t code)
 
 }  // namespace
 
-EvdevInputReader::EvdevInputReader(std::string keyboard_path, std::string mouse_path, std::string touchpad_path, bool grab_on_start, float touchpad_sensitivity)
+EvdevInputReader::EvdevInputReader(std::string keyboard_path, std::string mouse_path, bool grab_on_start)
     : requested_keyboard_path_(sanitizeInputPath(std::move(keyboard_path)))
     , requested_mouse_path_(sanitizeInputPath(std::move(mouse_path)))
-    , requested_touchpad_path_(sanitizeInputPath(std::move(touchpad_path)))
     , grab_enabled_(grab_on_start)
-    , touchpad_sensitivity_(touchpad_sensitivity)
 {
     openOrDiscoverDevice(keyboard_, requested_keyboard_path_, true);
     openOrDiscoverDevice(mouse_, requested_mouse_path_, false);
 
     if (keyboard_.fd < 0 || mouse_.fd < 0) {
         throw std::runtime_error("Failed to open evdev keyboard/mouse devices");
-    }
-
-    if (!requested_touchpad_path_.empty()) {
-        const int fd = ::open(requested_touchpad_path_.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-        if (fd >= 0 && isTouchpadDevice(fd)) {
-            touchpad_.fd = fd;
-            touchpad_.active_path = requested_touchpad_path_;
-            touchpad_.buffer.clear();
-            std::cout << "Opened touchpad evdev device: " << requested_touchpad_path_ << '\n';
-        } else {
-            if (fd >= 0) {
-                ::close(fd);
-            }
-            std::cerr << "Failed to open touchpad device: " << requested_touchpad_path_ << '\n';
-        }
     }
 
     if (grab_enabled_) {
@@ -352,12 +335,6 @@ EvdevInputReader::~EvdevInputReader()
         }
         ::close(mouse_.fd);
     }
-    if (touchpad_.fd >= 0) {
-        if (grab_enabled_) {
-            setGrab(touchpad_.fd, false);
-        }
-        ::close(touchpad_.fd);
-    }
 }
 
 EvdevInputReader::PollResult EvdevInputReader::PollReports()
@@ -368,9 +345,6 @@ EvdevInputReader::PollResult EvdevInputReader::PollReports()
     maybeReopenDevices();
     readAvailable(mouse_, false, result);
     readAvailable(keyboard_, true, result);
-    if (touchpad_.fd >= 0) {
-        readAvailable(touchpad_, false, result);
-    }
 
     result.mouse_buttons = button_mask_;
     return result;
@@ -383,7 +357,7 @@ bool EvdevInputReader::GrabEnabled() const
 
 void EvdevInputReader::maybeReopenDevices()
 {
-    if (keyboard_.fd >= 0 && mouse_.fd >= 0 && (touchpad_.fd >= 0 || requested_touchpad_path_.empty())) {
+    if (keyboard_.fd >= 0 && mouse_.fd >= 0) {
         return;
     }
 
@@ -403,24 +377,6 @@ void EvdevInputReader::maybeReopenDevices()
         openOrDiscoverDevice(mouse_, requested_mouse_path_, false);
         if (mouse_.fd >= 0 && grab_enabled_) {
             setGrab(mouse_.fd, true);
-        }
-    }
-    if (touchpad_.fd < 0 && !requested_touchpad_path_.empty()) {
-        const int fd = ::open(requested_touchpad_path_.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-        if (fd >= 0 && isTouchpadDevice(fd)) {
-            touchpad_.fd = fd;
-            touchpad_.active_path = requested_touchpad_path_;
-            touchpad_.buffer.clear();
-            std::cout << "Reopened touchpad evdev device: " << requested_touchpad_path_ << '\n';
-            if (grab_enabled_) {
-                setGrab(touchpad_.fd, true);
-            }
-            touchpad_tracking_ = false;
-            touchpad_has_position_ = false;
-        } else {
-            if (fd >= 0) {
-                ::close(fd);
-            }
         }
     }
 }
@@ -477,12 +433,8 @@ void EvdevInputReader::applyGrabState(bool enabled)
 {
     const bool keyboard_ok = setGrab(keyboard_.fd, enabled);
     const bool mouse_ok = setGrab(mouse_.fd, enabled);
-    bool touchpad_ok = true;
-    if (touchpad_.fd >= 0) {
-        touchpad_ok = setGrab(touchpad_.fd, enabled);
-    }
     
-    if (keyboard_ok && mouse_ok && touchpad_ok) {
+    if (keyboard_ok && mouse_ok) {
         grab_enabled_ = enabled;
         std::cout << "Input grab " << (enabled ? "enabled" : "disabled") << '\n';
     } else {
@@ -513,19 +465,17 @@ void EvdevInputReader::readAvailable(DeviceStream& device, bool keyboard, PollRe
         return;
     }
 
-    const bool is_touchpad = (!keyboard && &device == &touchpad_);
-
     uint8_t temp[sizeof(input_event) * 32];
     while (true) {
         const ssize_t n = ::read(device.fd, temp, sizeof(temp));
         if (n > 0) {
             device.buffer.insert(device.buffer.end(), temp, temp + n);
-            processBufferedEvents(device, keyboard, is_touchpad, result);
+            processBufferedEvents(device, keyboard, result);
             continue;
         }
 
         if (n == 0) {
-            const char* label = keyboard ? "Keyboard" : (is_touchpad ? "Touchpad" : "Mouse");
+            const char* label = keyboard ? "Keyboard" : "Mouse";
             closeDevice(device, label);
             return;
         }
@@ -534,15 +484,15 @@ void EvdevInputReader::readAvailable(DeviceStream& device, bool keyboard, PollRe
             return;
         }
 
-        const char* label = keyboard ? "keyboard" : (is_touchpad ? "touchpad" : "mouse");
+        const char* label = keyboard ? "keyboard" : "mouse";
         std::cerr << "read failed for " << label << " device: " << std::strerror(errno) << '\n';
-        const char* label_cap = keyboard ? "Keyboard" : (is_touchpad ? "Touchpad" : "Mouse");
+        const char* label_cap = keyboard ? "Keyboard" : "Mouse";
         closeDevice(device, label_cap);
         return;
     }
 }
 
-void EvdevInputReader::processBufferedEvents(DeviceStream& device, bool keyboard, bool is_touchpad, PollResult& result)
+void EvdevInputReader::processBufferedEvents(DeviceStream& device, bool keyboard, PollResult& result)
 {
     const std::size_t event_size = sizeof(input_event);
     std::size_t offset = 0;
@@ -553,8 +503,6 @@ void EvdevInputReader::processBufferedEvents(DeviceStream& device, bool keyboard
 
         if (keyboard) {
             handleKeyboardEvent(ev, result);
-        } else if (is_touchpad) {
-            handleTouchpadEvent(ev, result);
         } else {
             handleMouseEvent(ev, result);
         }
@@ -721,87 +669,6 @@ void EvdevInputReader::handleKeyboardEvent(const input_event& ev, PollResult& re
 
     if (setKeyboardUsageBit(keyboard_nkro_, *usage, pressed)) {
         emitKeyboardState(result);
-    }
-}
-
-void EvdevInputReader::handleTouchpadEvent(const input_event& ev, PollResult& result)
-{
-    if (ev.type == EV_ABS) {
-        if (ev.code == ABS_X) {
-            const int prev_x = touchpad_abs_x_;
-            touchpad_abs_x_ = ev.value;
-            
-            if (touchpad_tracking_ && touchpad_has_position_) {
-                const int raw_delta = touchpad_abs_x_ - prev_x;
-                const int scaled_delta = static_cast<int>(std::lround(static_cast<double>(raw_delta) * static_cast<double>(touchpad_sensitivity_)));
-                mouse_dx_ += scaled_delta;
-                mouse_dirty_ = true;
-            }
-        } else if (ev.code == ABS_Y) {
-            const int prev_y = touchpad_abs_y_;
-            touchpad_abs_y_ = ev.value;
-            
-            if (touchpad_tracking_ && touchpad_has_position_) {
-                const int raw_delta = touchpad_abs_y_ - prev_y;
-                const int scaled_delta = static_cast<int>(std::lround(static_cast<double>(raw_delta) * static_cast<double>(touchpad_sensitivity_)));
-                mouse_dy_ += scaled_delta;
-                mouse_dirty_ = true;
-            }
-        }
-        return;
-    }
-
-    if (ev.type == EV_KEY) {
-        if (ev.code == BTN_TOUCH || ev.code == BTN_TOOL_FINGER) {
-            const bool finger_down = ev.value != 0;
-            
-            if (finger_down && !touchpad_tracking_) {
-                touchpad_tracking_ = true;
-                touchpad_has_position_ = false;
-            } else if (!finger_down && touchpad_tracking_) {
-                touchpad_tracking_ = false;
-                touchpad_has_position_ = false;
-            }
-        }
-        
-        uint8_t mask = 0;
-        if (ev.code == BTN_LEFT) {
-            mask = 0x01;
-        } else if (ev.code == BTN_RIGHT) {
-            mask = 0x02;
-        } else if (ev.code == BTN_MIDDLE) {
-            mask = 0x04;
-        }
-
-        if (mask != 0) {
-            const bool pressed = ev.value != 0;
-            const uint8_t old = button_mask_;
-            if (pressed) {
-                button_mask_ = static_cast<uint8_t>(button_mask_ | mask);
-            } else {
-                button_mask_ = static_cast<uint8_t>(button_mask_ & ~mask);
-            }
-            if (old != button_mask_) {
-                result.mouse_buttons_changed = true;
-                result.mouse_buttons = button_mask_;
-                mouse_dirty_ = true;
-            }
-        }
-        return;
-    }
-
-    if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
-        if (touchpad_tracking_ && !touchpad_has_position_) {
-            touchpad_has_position_ = true;
-        }
-        
-        if (mouse_dirty_) {
-            result.mouse_reports.push_back({button_mask_, mouse_dx_, mouse_dy_, mouse_wheel_});
-            mouse_dx_ = 0;
-            mouse_dy_ = 0;
-            mouse_wheel_ = 0;
-            mouse_dirty_ = false;
-        }
     }
 }
 
