@@ -23,6 +23,7 @@ jobs:
             build-essential \
             cmake \
             pkg-config \
+            libsystemd-dev \
             libbluetooth-dev \
             python3
       
