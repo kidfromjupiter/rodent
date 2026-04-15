@@ -31,10 +31,14 @@
 namespace rodent::input {
 namespace {
 
+// Keyboard event code range for NKRO key tracking
 constexpr uint8_t kKeyboardUsageMin = 0x04;
 constexpr uint8_t kKeyboardUsageMax = 0xE7;
+
+// High-resolution wheel conversion factor (120 units = 1 logical detent)
 constexpr int kWheelHiResUnitsPerDetent = 120;
 
+// Remove trailing '@' characters from evdev device paths
 std::string sanitizeInputPath(std::string path)
 {
     while (!path.empty() && path.back() == '@') {
@@ -43,11 +47,13 @@ std::string sanitizeInputPath(std::string path)
     return path;
 }
 
+// Convert bit count to unsigned long array size for ioctl operations
 constexpr std::size_t bitsToULongs(std::size_t bits)
 {
     return (bits + (sizeof(unsigned long) * 8) - 1) / (sizeof(unsigned long) * 8);
 }
 
+// Check if a specific bit is set in a bitset
 bool bitIsSet(const std::vector<unsigned long>& bits, std::size_t bit)
 {
     const std::size_t word_bits = sizeof(unsigned long) * 8;
@@ -59,6 +65,7 @@ bool bitIsSet(const std::vector<unsigned long>& bits, std::size_t bit)
     return (bits[idx] & (1UL << offset)) != 0;
 }
 
+// Query device capabilities using ioctl EVIOCGBIT
 std::vector<unsigned long> queryBitset(int fd, unsigned int ev, std::size_t max_bit)
 {
     const std::size_t n_longs = bitsToULongs(max_bit + 1);
@@ -70,6 +77,7 @@ std::vector<unsigned long> queryBitset(int fd, unsigned int ev, std::size_t max_
     return bits;
 }
 
+// Detect if a file descriptor refers to a keyboard device
 bool isKeyboardDevice(int fd)
 {
     auto ev_bits = queryBitset(fd, 0, EV_MAX);
@@ -82,9 +90,11 @@ bool isKeyboardDevice(int fd)
         return false;
     }
 
+    // Verify presence of alphabetic keys and control modifier
     return bitIsSet(key_bits, KEY_A) && bitIsSet(key_bits, KEY_Z) && bitIsSet(key_bits, KEY_LEFTCTRL);
 }
 
+// Detect if a file descriptor refers to a mouse device
 bool isMouseDevice(int fd)
 {
     auto ev_bits = queryBitset(fd, 0, EV_MAX);
@@ -98,11 +108,13 @@ bool isMouseDevice(int fd)
         return false;
     }
 
+    // Verify presence of relative X/Y and left button
     return bitIsSet(rel_bits, REL_X) &&
            bitIsSet(rel_bits, REL_Y) &&
            bitIsSet(key_bits, BTN_LEFT);
 }
 
+// Detect if a file descriptor refers to a touchpad device
 bool isTouchpadDevice(int fd)
 {
     auto ev_bits = queryBitset(fd, 0, EV_MAX);
@@ -304,6 +316,8 @@ std::optional<uint8_t> linuxKeyCodeToModifierBit(uint16_t code)
 
 }  // namespace
 
+// Initialize input reader with requested device paths
+// Attempts to open devices immediately; throws if neither keyboard nor mouse can be opened
 EvdevInputReader::EvdevInputReader(std::string keyboard_path, std::string mouse_path, bool grab_on_start)
     : requested_keyboard_path_(sanitizeInputPath(std::move(keyboard_path)))
     , requested_mouse_path_(sanitizeInputPath(std::move(mouse_path)))
@@ -321,6 +335,7 @@ EvdevInputReader::EvdevInputReader(std::string keyboard_path, std::string mouse_
     }
 }
 
+// Clean up: release input grab and close device file descriptors
 EvdevInputReader::~EvdevInputReader()
 {
     if (keyboard_.fd >= 0) {
@@ -337,6 +352,8 @@ EvdevInputReader::~EvdevInputReader()
     }
 }
 
+// Collect input events from all open devices and return aggregated results
+// Handles device reconnection if devices become unavailable
 EvdevInputReader::PollResult EvdevInputReader::PollReports()
 {
     PollResult result {};
