@@ -23,9 +23,18 @@ jobs:
             build-essential \
             cmake \
             pkg-config \
-            libsdbus-c++-dev \
             libbluetooth-dev \
             python3
+      
+      - name: Build and install sdbus-c++
+        run: |
+          git clone https://github.com/Kistler-Group/sdbus-cpp.git
+          cd sdbus-cpp
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          cmake --build .
+          sudo cmake --build . --target install
       
       - name: Configure CMake
         run: |
