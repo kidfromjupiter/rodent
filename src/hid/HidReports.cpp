@@ -25,6 +25,18 @@ std::vector<uint8_t> BuildKeyboardInputReport(
     return report;
 }
 
+std::vector<uint8_t> BuildTouchpadInputReport(uint16_t x, uint16_t y)
+{
+    std::vector<uint8_t> report;
+    report.reserve(5);
+    report.push_back(0x03);
+    report.push_back(static_cast<uint8_t>((x >> 8) & 0xFF));
+    report.push_back(static_cast<uint8_t>(x & 0xFF));
+    report.push_back(static_cast<uint8_t>((y >> 8) & 0xFF));
+    report.push_back(static_cast<uint8_t>(y & 0xFF));
+    return report;
+}
+
 const std::vector<uint8_t>& CompositeHidReportMap()
 {
     static const std::vector<uint8_t> kCompositeHidReportMap {
@@ -87,6 +99,20 @@ const std::vector<uint8_t>& CompositeHidReportMap()
         0x75, 0x01,
         0x95, 0x04,
         0x81, 0x01,
+        0xC0,
+
+        0x05, 0x01,
+        0x09, 0x04,
+        0xA1, 0x01,
+        0x85, 0x03,
+        0x05, 0x01,
+        0x09, 0x30,
+        0x09, 0x31,
+        0x15, 0x00,
+        0x27, 0xFF, 0xFF, 0x00, 0x00,
+        0x75, 0x10,
+        0x95, 0x02,
+        0x81, 0x02,
         0xC0
     };
     return kCompositeHidReportMap;

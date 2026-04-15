@@ -15,6 +15,8 @@ std::vector<uint8_t> BuildKeyboardInputReport(
     uint8_t modifiers,
     const std::array<uint8_t, kKeyboardNkroBytes>& nkro);
 
+std::vector<uint8_t> BuildTouchpadInputReport(uint16_t x, uint16_t y);
+
 const std::vector<uint8_t>& CompositeHidReportMap();
 
 }  // namespace rodent::hid
