@@ -33,7 +33,7 @@ public:
         std::vector<KeyboardState> keyboard_states;
     };
 
-    EvdevInputReader(std::string keyboard_path, std::string mouse_path, bool grab_on_start);
+    EvdevInputReader(std::string keyboard_path, std::string mouse_path, std::string touchpad_path, bool grab_on_start, float touchpad_sensitivity = 1.0f);
     ~EvdevInputReader();
 
     PollResult PollReports();
@@ -53,18 +53,22 @@ private:
     void toggleGrab();
     void closeDevice(DeviceStream& device, const char* label);
     void readAvailable(DeviceStream& device, bool keyboard, PollResult& result);
-    void processBufferedEvents(DeviceStream& device, bool keyboard, PollResult& result);
+    void processBufferedEvents(DeviceStream& device, bool keyboard, bool is_touchpad, PollResult& result);
     bool updateModifierBit(uint8_t bit, bool pressed);
     void emitKeyboardState(PollResult& result);
     void handleMouseEvent(const input_event& ev, PollResult& result);
     void handleKeyboardEvent(const input_event& ev, PollResult& result);
+    void handleTouchpadEvent(const input_event& ev, PollResult& result);
 
     std::string requested_keyboard_path_;
     std::string requested_mouse_path_;
+    std::string requested_touchpad_path_;
     DeviceStream keyboard_;
     DeviceStream mouse_;
+    DeviceStream touchpad_;
     bool grab_enabled_ = true;
     std::chrono::steady_clock::time_point next_reopen_attempt_ {};
+    float touchpad_sensitivity_ = 1.0f;
 
     uint8_t button_mask_ = 0;
     uint8_t keyboard_modifiers_ = 0;
@@ -76,6 +80,11 @@ private:
     int mouse_wheel_hi_res_accum_ = 0;
     bool mouse_dirty_ = false;
     bool warned_horizontal_scroll_ = false;
+
+    int touchpad_abs_x_ = 0;
+    int touchpad_abs_y_ = 0;
+    bool touchpad_tracking_ = false;
+    bool touchpad_has_position_ = false;
 
     bool left_ctrl_physical_ = false;
     bool escape_physical_ = false;

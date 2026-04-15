@@ -8,14 +8,17 @@
 
 namespace rodent::runtime {
 
-inline constexpr const char* kDefaultKeyboardEventPath = "/dev/input/by-id/usb-BY_Tech_Gaming_Keyboard-event-kbd";
-inline constexpr const char* kDefaultMouseEventPath = "/dev/input/by-id/usb-Logitech_USB_Receiver-if02-event-mouse";
+inline constexpr const char* kDefaultKeyboardEventPath = "/dev/input/event3";
+inline constexpr const char* kDefaultMouseEventPath = "/dev/input/event5";
+inline constexpr const char* kDefaultTouchpadEventPath = "";
 inline constexpr const char* kEnvDpiMultiplier = "RODENT_DPI_MULTIPLIER";
 inline constexpr const char* kEnvSensitivityMultiplier = "RODENT_SENSITIVITY_MULTIPLIER";
+inline constexpr const char* kEnvTouchpadSensitivityMultiplier = "RODENT_TOUCHPAD_SENSITIVITY_MULTIPLIER";
 inline constexpr const char* kEnvWheelMultiplier = "RODENT_WHEEL_MULTIPLIER";
 inline constexpr const char* kEnvInvertScrollDirection = "RODENT_INVERT_SCROLL_DIRECTION";
 inline constexpr const char* kEnvKeyboardEventPath = "RODENT_EVDEV_KEYBOARD_PATH";
 inline constexpr const char* kEnvMouseEventPath = "RODENT_EVDEV_MOUSE_PATH";
+inline constexpr const char* kEnvTouchpadEventPath = "RODENT_EVDEV_TOUCHPAD_PATH";
 inline constexpr const char* kEnvGrabOnStart = "RODENT_GRAB_ON_START";
 inline constexpr const char* kEnvBtControllerIndex = "RODENT_BT_CONTROLLER_INDEX";
 inline constexpr const char* kEnvLeTargetAddress = "RODENT_LE_TARGET_ADDRESS";

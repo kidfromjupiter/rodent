@@ -19,9 +19,17 @@
 namespace {
 
 volatile std::sig_atomic_t g_shouldStop = 0;
+rodent::bluez::BluezClient* g_bluezClient = nullptr;
 
 void handleSignal(int)
 {
+    if (g_bluezClient != nullptr) {
+        try {
+            g_bluezClient->clearAdapterAlias();
+        } catch (const std::exception&) {
+            // Ignore errors during shutdown
+        }
+    }
     g_shouldStop = 1;
 }
 
@@ -40,6 +48,15 @@ int main()
         std::signal(SIGTERM, handleSignal);
 
         rodent::bluez::BluezClient client;
+        g_bluezClient = &client;
+
+        try {
+            client.setAdapterAlias("FabricMouse");
+            std::cout << "Set adapter alias to 'FabricMouse'\n";
+        } catch (const std::exception& e) {
+            std::cerr << "Warning: Failed to set adapter alias: " << e.what() << '\n';
+        }
+
         const auto managedObjects = client.getManagedObjects();
         (void)managedObjects;
 
@@ -157,7 +174,7 @@ int main()
         device_info_service.emitInterfacesAddedSignal({sdbus::InterfaceName("org.bluez.GattService1")});
 
         std::string vendor_name = "kidfromjupiter";
-        std::string product_name = "FabricMouse";
+        std::string product_name = "FabricMouse Laptop";
         auto vendor_char = GattChar(
             client.connection(),
             sdbus::ObjectPath("/rodent/service2/char0"),
@@ -200,6 +217,7 @@ int main()
             {"read", "notify"});
         clipboard_char.emitInterfacesAddedSignal({sdbus::InterfaceName("org.bluez.GattCharacteristic1")});
 
+
         try {
             auto register_future = manager.RegisterApplication(sdbus::ObjectPath("/rodent"), {});
             register_future.get();
@@ -235,6 +253,10 @@ int main()
             rodent::runtime::ReadStringFromEnv(
                 rodent::runtime::kEnvMouseEventPath,
                 rodent::runtime::kDefaultMouseEventPath));
+        const std::string touchpad_event_path = rodent::runtime::SanitizeInputPath(
+            rodent::runtime::ReadStringFromEnv(
+                rodent::runtime::kEnvTouchpadEventPath,
+                rodent::runtime::kDefaultTouchpadEventPath));
         const bool grab_on_start =
             rodent::runtime::ReadBoolFromEnv(rodent::runtime::kEnvGrabOnStart, false);
         const bool clipboard_watch_primary =
@@ -242,35 +264,40 @@ int main()
         const std::string clipboard_watch_seat =
             rodent::runtime::ReadStringFromEnv(rodent::runtime::kEnvClipboardWatchSeat, "");
 
-        std::cout << "Reading evdev input from keyboard='" << keyboard_event_path
-                  << "' mouse='" << mouse_event_path
-                  << "' grab_on_start=" << (grab_on_start ? "true" : "false") << '\n';
-        std::cout << "Clipboard watch mode=wayland primary="
-                  << (clipboard_watch_primary ? "true" : "false")
-                  << " seat='" << clipboard_watch_seat << "'\n";
-
-        rodent::input::EvdevInputReader input_reader(keyboard_event_path, mouse_event_path, grab_on_start);
-        rodent::clipboard::WaylandClipboardWatcher clipboard_watcher({
-            .seat = clipboard_watch_seat.empty() ? std::nullopt : std::optional<std::string>(clipboard_watch_seat),
-            .primary = clipboard_watch_primary,
-        });
-        clipboard_watcher.Start();
-
         const float dpi_multiplier =
             rodent::runtime::ReadMultiplierFromEnv(rodent::runtime::kEnvDpiMultiplier, 1.0f);
         const float sensitivity_multiplier =
             rodent::runtime::ReadMultiplierFromEnv(rodent::runtime::kEnvSensitivityMultiplier, 1.0f);
+        const float touchpad_sensitivity_multiplier =
+            rodent::runtime::ReadMultiplierFromEnv(rodent::runtime::kEnvTouchpadSensitivityMultiplier, 1.0f);
         const float wheel_multiplier =
             rodent::runtime::ReadMultiplierFromEnv(rodent::runtime::kEnvWheelMultiplier, 1.0f);
         const bool invert_scroll_direction =
             rodent::runtime::ReadBoolFromEnv(rodent::runtime::kEnvInvertScrollDirection, false);
         const float delta_multiplier = dpi_multiplier * sensitivity_multiplier;
 
+        std::cout << "Reading evdev input from keyboard='" << keyboard_event_path
+                  << "' mouse='" << mouse_event_path
+                  << "' touchpad='" << touchpad_event_path
+                  << "' grab_on_start=" << (grab_on_start ? "true" : "false") << '\n';
+        std::cout << "Clipboard watch mode=wayland primary="
+                  << (clipboard_watch_primary ? "true" : "false")
+                  << " seat='" << clipboard_watch_seat << "'\n";
         std::cout << "Mouse DPI multiplier=" << dpi_multiplier
                   << " sensitivity multiplier=" << sensitivity_multiplier
                   << " effective delta multiplier=" << delta_multiplier
                   << " wheel multiplier=" << wheel_multiplier
                   << " invert scroll direction=" << (invert_scroll_direction ? "true" : "false") << '\n';
+        if (!touchpad_event_path.empty()) {
+            std::cout << "Touchpad sensitivity multiplier=" << touchpad_sensitivity_multiplier << '\n';
+        }
+
+        rodent::input::EvdevInputReader input_reader(keyboard_event_path, mouse_event_path, touchpad_event_path, grab_on_start, touchpad_sensitivity_multiplier);
+        rodent::clipboard::WaylandClipboardWatcher clipboard_watcher({
+            .seat = clipboard_watch_seat.empty() ? std::nullopt : std::optional<std::string>(clipboard_watch_seat),
+            .primary = clipboard_watch_primary,
+        });
+        clipboard_watcher.Start();
 
         uint8_t current_mouse_buttons = 0;
         uint8_t last_sent_buttons = 0;
@@ -373,6 +400,15 @@ int main()
 
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
+
+        try {
+            client.clearAdapterAlias();
+            std::cout << "Cleared adapter alias\n";
+        } catch (const std::exception& e) {
+            std::cerr << "Warning: Failed to clear adapter alias: " << e.what() << '\n';
+        }
+
+        g_bluezClient = nullptr;
     } catch (const sdbus::Error& error) {
         std::cerr << "D-Bus error: " << error.getName() << ": " << error.getMessage() << '\n';
         return 1;

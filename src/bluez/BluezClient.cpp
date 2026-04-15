@@ -1,5 +1,7 @@
 #include "BluezClient.h"
 
+#include "generated/bluez/proxies/org_bluez_Adapter1_proxy.h"
+
 namespace rodent::bluez {
 
 ManagerProxy::ManagerProxy(sdbus::IConnection& connection)
@@ -67,6 +69,32 @@ std::vector<sdbus::ObjectPath> BluezClient::listAdapters() const
 std::vector<sdbus::ObjectPath> BluezClient::listDevices() const
 {
     return listObjectsWithInterface(org::bluez::Device1_proxy::INTERFACE_NAME);
+}
+
+void BluezClient::setAdapterAlias(std::string_view alias)
+{
+    const auto adapters = listAdapters();
+    if (adapters.empty()) {
+        throw std::runtime_error("No Bluetooth adapters found");
+    }
+
+    const auto& adapterPath = adapters[0];
+
+    class Adapter1 : public sdbus::ProxyInterfaces<org::bluez::Adapter1_proxy> {
+    public:
+        Adapter1(sdbus::IConnection& connection, const sdbus::ObjectPath& path)
+            : ProxyInterfaces(connection, sdbus::ServiceName{kServiceName}, path)
+        {
+        }
+    };
+
+    Adapter1 adapter(*connection_, adapterPath);
+    adapter.Alias(std::string{alias});
+}
+
+void BluezClient::clearAdapterAlias()
+{
+    setAdapterAlias("");
 }
 
 bool hasInterface(const InterfaceMap& interfaces, std::string_view interfaceName)

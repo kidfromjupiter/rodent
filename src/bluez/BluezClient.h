@@ -48,6 +48,9 @@ public:
     [[nodiscard]] std::vector<sdbus::ObjectPath> listAdapters() const;
     [[nodiscard]] std::vector<sdbus::ObjectPath> listDevices() const;
 
+    void setAdapterAlias(std::string_view alias);
+    void clearAdapterAlias();
+
 private:
     std::unique_ptr<sdbus::IConnection> connection_;
     std::unique_ptr<ManagerProxy> manager_;
