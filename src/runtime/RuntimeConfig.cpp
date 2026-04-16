@@ -8,9 +8,6 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
-#include <stdexcept>
-
-#include <bluetooth/bluetooth.h>
 
 namespace rodent::runtime {
 
@@ -58,42 +55,6 @@ bool ReadBoolFromEnv(const char* env_name, bool default_value)
     return default_value;
 }
 
-uint16_t ReadControllerIndexFromEnv(const char* env_name, uint16_t default_value)
-{
-    const char* raw = std::getenv(env_name);
-    if (raw == nullptr || raw[0] == '\0') {
-        return default_value;
-    }
-
-    char* end = nullptr;
-    errno = 0;
-    const unsigned long parsed = std::strtoul(raw, &end, 10);
-    if (errno != 0 || end == raw || (end != nullptr && *end != '\0') || parsed > std::numeric_limits<uint16_t>::max()) {
-        std::cerr << "Invalid " << env_name << "='" << raw << "', defaulting to " << default_value << '\n';
-        return default_value;
-    }
-
-    return static_cast<uint16_t>(parsed);
-}
-
-uint8_t ReadU8FromEnv(const char* env_name, uint8_t default_value)
-{
-    const char* raw = std::getenv(env_name);
-    if (raw == nullptr || raw[0] == '\0') {
-        return default_value;
-    }
-
-    char* end = nullptr;
-    errno = 0;
-    const unsigned long parsed = std::strtoul(raw, &end, 0);
-    if (errno != 0 || end == raw || (end != nullptr && *end != '\0') || parsed > std::numeric_limits<uint8_t>::max()) {
-        std::cerr << "Invalid " << env_name << "='" << raw << "', defaulting to " << static_cast<int>(default_value) << '\n';
-        return default_value;
-    }
-
-    return static_cast<uint8_t>(parsed);
-}
-
 std::string ReadStringFromEnv(const char* env_name, const char* default_value)
 {
     const char* raw = std::getenv(env_name);
@@ -121,22 +82,6 @@ int ScaleDeltaWithMultiplier(int delta, float multiplier)
         return std::numeric_limits<int>::max();
     }
     return static_cast<int>(std::lround(scaled));
-}
-
-std::optional<bluetooth::DirectedTargetConfig> ReadDirectedTargetConfig()
-{
-    const char* raw_addr = std::getenv(kEnvLeTargetAddress);
-    if (raw_addr == nullptr || raw_addr[0] == '\0') {
-        return std::nullopt;
-    }
-
-    bluetooth::DirectedTargetConfig cfg;
-    if (::str2ba(raw_addr, &cfg.addr) != 0) {
-        throw std::runtime_error(std::string("Invalid BLE target address in ") + kEnvLeTargetAddress + ": " + raw_addr);
-    }
-    cfg.addr_type = ReadU8FromEnv(kEnvLeTargetAddrType, cfg.addr_type);
-    cfg.action = ReadU8FromEnv(kEnvLeTargetAction, cfg.action);
-    return cfg;
 }
 
 }  // namespace rodent::runtime

@@ -1,6 +1,5 @@
 #include "src/bluez/BluezClient.h"
 #include "src/bluez/GattServer.h"
-#include "src/bluetooth/MgmtAdvertiser.h"
 #include "src/clipboard/ClipboardWatcher.h"
 #include "src/hid/HidReports.h"
 #include "src/input/EvdevInputReader.h"
@@ -36,10 +35,12 @@ void handleSignal(int)
 }  // namespace
 
 using rodent::bluez::Application;
+using rodent::bluez::AdvertisingManager;
 using rodent::bluez::GattChar;
 using rodent::bluez::GattDesc;
 using rodent::bluez::GattManager;
 using rodent::bluez::GattService;
+using rodent::bluez::LEAdvertisement;
 
 int main()
 {
@@ -62,17 +63,21 @@ int main()
 
         auto application = Application(client.connection(), sdbus::ObjectPath("/rodent"));
         auto manager = GattManager(client.connection(), sdbus::ObjectPath("/org/bluez/hci0"));
+        auto advertising_manager = AdvertisingManager(client.connection(), sdbus::ObjectPath("/org/bluez/hci0"));
 
         const std::vector<std::string> advertisement_service_uuids = {
             "00001812-0000-1000-8000-00805f9b34fb"};
         const std::string advertisement_local_name = "FabricMouse";
         constexpr uint16_t advertisement_appearance = static_cast<uint16_t>(0x03C0);
-        const uint16_t bt_controller_index =
-            rodent::runtime::ReadControllerIndexFromEnv(
-                rodent::runtime::kEnvBtControllerIndex,
-                rodent::runtime::kDefaultBtControllerIndex);
-        const auto directed_target = rodent::runtime::ReadDirectedTargetConfig();
-        rodent::bluetooth::MgmtAdvertiser mgmt_advertiser(bt_controller_index);
+        const sdbus::ObjectPath advertisement_path("/rodent/advertisement0");
+        auto advertisement = LEAdvertisement(
+            client.connection(),
+            advertisement_path,
+            LEAdvertisement::Config {
+                .service_uuids = advertisement_service_uuids,
+                .local_name = advertisement_local_name,
+                .appearance = advertisement_appearance,
+            });
 
         auto batt_service = GattService(
             client.connection(),
@@ -231,15 +236,17 @@ int main()
         }
 
         try {
-            mgmt_advertiser.Start(
-                advertisement_service_uuids,
-                advertisement_local_name,
-                advertisement_appearance,
-                directed_target);
-            std::cout << "Advertisement register successful via BlueZ mgmt API (hci"
-                      << bt_controller_index << ")\n";
+            (void)advertising_manager.RegisterAdvertisementAsync(advertisement_path, {});
+            const auto register_error = advertising_manager.WaitForRegisterAdvertisement();
+            if (register_error.has_value()) {
+                std::cout << "RegisterAdvertisement (D-Bus) failed: "
+                          << register_error->getName() << ": "
+                          << register_error->getMessage() << '\n';
+                return 1;
+            }
+            std::cout << "Advertisement register successful via BlueZ D-Bus\n";
         } catch (const std::exception& e) {
-            std::cout << "RegisterAdvertisement (mgmt) failed: " << e.what() << '\n';
+            std::cout << "RegisterAdvertisement (D-Bus) failed: " << e.what() << '\n';
             return 1;
         }
 
@@ -389,6 +396,13 @@ int main()
             }
 
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        try {
+            advertising_manager.UnregisterAdvertisement(advertisement_path);
+            std::cout << "Advertisement unregistered\n";
+        } catch (const std::exception& e) {
+            std::cerr << "Warning: Failed to unregister advertisement: " << e.what() << '\n';
         }
 
         try {
