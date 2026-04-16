@@ -19,6 +19,15 @@ I see clipboard share as something essential for a true connected experience.
 3. Connect to your PC via bluetooth. ( disable all other profiles such as audio, calls except for input if you see this )
 4. Ctrl + Escape to toggle input grabbing. 
 
+## Troubleshooting input device permissions
+Rodent needs access to `/dev/input/eventX` devices. If you see errors like:
+
+- `Failed to find keyboard evdev device (requested path: /dev/input/event3)`
+- `Failed to find mouse evdev device (requested path: /dev/input/event15)`
+
+add your user to the `input` group:
+
+`sudo usermod -aG input $USER`
+
 ## Known limitations
 - Currently supports switching to only 1 other device. This may improve in the future. But since we're at the mercy of bluetooth procotols, its hard to say till I find out more
-
